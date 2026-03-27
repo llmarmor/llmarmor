@@ -7,7 +7,7 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -15,7 +15,12 @@ jobs:
           python-version: "3.12"
       - run: pip install build twine
       - run: python -m build
-      - run: twine upload dist/*
+      - name: Publish to PyPI
+        run: twine upload dist/*
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+      - name: Create GitHub Release
+        run: gh release create ${{ github.ref_name }} dist/* --generate-notes
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
