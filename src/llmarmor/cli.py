@@ -16,13 +16,35 @@ _SEVERITY_COLORS = {
     "MEDIUM": "yellow",
 }
 
-_RULE_LIST = [
-    ("LLM01", "Prompt Injection", "🟢 Active"),
-    ("LLM02", "Sensitive Information Disclosure", "🟢 Active"),
-    ("LLM05", "Improper Output Handling", "🟡 Coming soon"),
-    ("LLM07", "System Prompt Leakage", "🟢 Active"),
-    ("LLM08", "Excessive Agency", "🟡 Coming soon"),
-    ("LLM10", "Unbounded Consumption", "🟢 Active"),
+_RULE_GROUPS = [
+    (
+        "Active",
+        "🟢",
+        [
+            ("LLM01", "Prompt Injection"),
+            ("LLM02", "Sensitive Information Disclosure"),
+            ("LLM07", "System Prompt Leakage"),
+            ("LLM10", "Unbounded Consumption"),
+        ],
+    ),
+    (
+        "Planned",
+        "🟡",
+        [
+            ("LLM05", "Improper Output Handling"),
+            ("LLM08", "Excessive Agency"),
+        ],
+    ),
+    (
+        "Out of Scope",
+        "🔴",
+        [
+            ("LLM03", "Supply Chain Vulnerabilities"),
+            ("LLM04", "Data and Model Poisoning"),
+            ("LLM06", "Insecure Plugin Design"),
+            ("LLM09", "Misinformation"),
+        ],
+    ),
 ]
 
 
@@ -96,16 +118,19 @@ def scan(path: str) -> None:
 
 @main.command()
 def rules() -> None:
-    """List all supported OWASP LLM Top 10 detection rules."""
-    table = Table(title="OWASP LLM Top 10 Rules", show_lines=True)
-    table.add_column("ID", style="bold cyan", width=8)
-    table.add_column("Rule Name")
-    table.add_column("Status", width=16)
+    """List all OWASP LLM Top 10 rules grouped by support status."""
+    for group_name, icon, rule_entries in _RULE_GROUPS:
+        table = Table(
+            title=f"{icon} {group_name}",
+            show_lines=True,
+        )
+        table.add_column("ID", style="bold cyan", width=8)
+        table.add_column("Rule Name")
 
-    for rule_id, name, status in _RULE_LIST:
-        table.add_row(rule_id, name, status)
+        for rule_id, name in rule_entries:
+            table.add_row(rule_id, name)
 
-    console.print(table)
+        console.print(table)
 
 
 if __name__ == "__main__":
