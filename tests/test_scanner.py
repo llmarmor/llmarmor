@@ -788,8 +788,154 @@ d = db.fetch(1)
         tainted = collect_tainted(tree)
         assert not tainted, f"No variables should be tainted from safe sources; got: {tainted}"
 
+    # ------------------------------------------------------------------
+    # Fix 2: Plain variable in dict content must never be flagged (LLM01)
+    # ------------------------------------------------------------------
 
-class TestSensitiveInfo:
+    def test_system_role_plain_name_not_flagged(self, tmp_path: Path):
+        """{"role": "system", "content": system} must NOT be flagged.
+
+        A plain variable reference is not string interpolation — no injection
+        of instructions mixed with user data is occurring.
+        """
+        code = """\
+def handle(system, user):
+    msg = {"role": "system", "content": system}
+    return msg
+"""
+        result = self._analyze(tmp_path, code)
+        assert not any(f["rule_id"] == "LLM01" for f in result["findings"]), (
+            '{"role": "system", "content": system} (plain variable) should NOT be flagged; '
+            f"got: {result['findings']}"
+        )
+
+    def test_user_role_plain_name_not_flagged(self, tmp_path: Path):
+        """{"role": "user", "content": user} must NOT be flagged."""
+        code = """\
+def handle(user):
+    msg = {"role": "user", "content": user}
+    return msg
+"""
+        result = self._analyze(tmp_path, code)
+        assert not any(f["rule_id"] == "LLM01" for f in result["findings"]), (
+            '{"role": "user", "content": user} (plain variable) should NOT be flagged; '
+            f"got: {result['findings']}"
+        )
+
+    def test_system_role_fstring_tainted_flagged(self, tmp_path: Path):
+        """{"role": "system", "content": f"Help: {tainted_var}"} must be flagged."""
+        code = """\
+tainted_var = input("Enter: ")
+msg = {"role": "system", "content": f"Help: {tainted_var}"}
+"""
+        result = self._analyze(tmp_path, code)
+        assert any(f["rule_id"] == "LLM01" for f in result["findings"]), (
+            "f-string interpolation of tainted var in system role should produce LLM01; "
+            f"got: {result['findings']}"
+        )
+
+    def test_system_role_concat_tainted_flagged(self, tmp_path: Path):
+        """{"role": "system", "content": "Help: " + tainted_var} must be flagged."""
+        code = """\
+tainted_var = input("Enter: ")
+msg = {"role": "system", "content": "Help: " + tainted_var}
+"""
+        result = self._analyze(tmp_path, code)
+        assert any(f["rule_id"] == "LLM01" for f in result["findings"]), (
+            "String concatenation of tainted var in system role should produce LLM01; "
+            f"got: {result['findings']}"
+        )
+
+    def test_messages_list_plain_names_not_flagged(self, tmp_path: Path):
+        """List of dicts with plain variable content must NOT be flagged.
+
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        """
+        code = """\
+def handle(system, user):
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+    return messages
+"""
+        result = self._analyze(tmp_path, code)
+        assert not any(f["rule_id"] == "LLM01" for f in result["findings"]), (
+            "messages list with plain variable content should NOT be flagged; "
+            f"got: {result['findings']}"
+        )
+
+    # ------------------------------------------------------------------
+    # Fix 3: Eval/test file context detection
+    # ------------------------------------------------------------------
+
+    def test_eval_path_downgrades_llm01_to_info(self, tmp_path: Path):
+        """LLM01 findings in a file under an 'evals/' path must be INFO severity."""
+        code = """\
+tainted_var = input("Enter: ")
+msg = {"role": "system", "content": f"Help: {tainted_var}"}
+"""
+        # Simulate a file at evals/graders.py
+        from llmarmor.ast_analysis import analyze
+
+        result = analyze(str(tmp_path / "evals" / "graders.py"), code)
+        llm01 = [f for f in result["findings"] if f["rule_id"] == "LLM01"]
+        assert llm01, "Expected at least one LLM01 finding in eval context"
+        assert all(f["severity"] == "INFO" for f in llm01), (
+            "LLM01 findings in eval context should be downgraded to INFO; "
+            f"got severities: {[f['severity'] for f in llm01]}"
+        )
+        assert all(f["description"].startswith("[eval context]") for f in llm01), (
+            "LLM01 descriptions in eval context should be prefixed with '[eval context]'; "
+            f"got: {[f['description'][:30] for f in llm01]}"
+        )
+
+    def test_non_eval_path_keeps_llm01_critical(self, tmp_path: Path):
+        """LLM01 findings in a regular app file must remain CRITICAL severity."""
+        code = """\
+tainted_var = input("Enter: ")
+msg = {"role": "system", "content": f"Help: {tainted_var}"}
+"""
+        from llmarmor.ast_analysis import analyze
+
+        result = analyze(str(tmp_path / "app" / "chat.py"), code)
+        llm01 = [f for f in result["findings"] if f["rule_id"] == "LLM01"]
+        assert llm01, "Expected at least one LLM01 finding in non-eval context"
+        assert all(f["severity"] == "CRITICAL" for f in llm01), (
+            "LLM01 findings in non-eval context should remain CRITICAL; "
+            f"got severities: {[f['severity'] for f in llm01]}"
+        )
+        assert not any(f["description"].startswith("[eval context]") for f in llm01), (
+            "LLM01 descriptions in non-eval context must not have '[eval context]' prefix"
+        )
+
+    # ------------------------------------------------------------------
+    # Fix 1: SyntaxWarning suppression during scan
+    # ------------------------------------------------------------------
+
+    def test_syntax_warning_not_emitted_during_scan(self, tmp_path: Path):
+        """Scanning a file with invalid escape sequences must not emit SyntaxWarning."""
+        import warnings
+
+        from llmarmor.scanner import _scan_file
+
+        # '\$' is an invalid escape in Python 3.12+ and triggers SyntaxWarning
+        code = 'pattern = "\\$[0-9]+"\n'
+        py_file = tmp_path / "currency.py"
+        py_file.write_text(code)
+
+        with warnings.catch_warnings(record=True) as recorded:
+            warnings.simplefilter("always")
+            results: list[dict] = []
+            _scan_file(py_file, code, results)
+
+        syntax_warnings = [w for w in recorded if issubclass(w.category, SyntaxWarning)]
+        assert syntax_warnings == [], (
+            f"SyntaxWarning should be suppressed during scan; got: {syntax_warnings}"
+        )
     OPENAI_KEY = 'OPENAI_API_KEY = "sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234"'
     ANTHROPIC_KEY = 'ANTHROPIC_KEY = "sk-ant-api03-abc123def456ghi789jkl012mno345pqr678stu"'
     GOOGLE_KEY = 'GOOGLE_KEY = "AIzaSyAbcdefghijklmnopqrstuvwxyz01234567890"'

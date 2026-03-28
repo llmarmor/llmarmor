@@ -32,6 +32,7 @@ On ``SyntaxError`` (or any other parse failure), both values are empty.
 """
 
 import ast
+from pathlib import Path as _Path
 
 _LLM01 = "LLM01"
 _LLM07 = "LLM07"
@@ -84,6 +85,35 @@ _LLM10_METHODS: frozenset[str] = frozenset(
 
 _MIN_SYSTEM_PROMPT_LEN = 100
 
+# Path segments (directory or file stem, case-insensitive) that indicate an
+# eval / test / grading harness.  When detected, LLM01 findings are downgraded
+# to INFO severity to reduce noise in legitimate evaluation code.
+_EVAL_PATH_SEGMENTS: frozenset[str] = frozenset(
+    [
+        "eval",
+        "evals",
+        "test",
+        "tests",
+        "grader",
+        "graders",
+        "benchmark",
+        "benchmarks",
+        "fixture",
+        "fixtures",
+    ]
+)
+
+# Top-level import names whose presence suggests an eval / test harness.
+_EVAL_IMPORT_NAMES: frozenset[str] = frozenset(
+    ["pytest", "unittest", "deepeval", "ragas", "promptfoo"]
+)
+
+# Fragments matched (case-insensitive) against function / class names to
+# identify eval / test / grading contexts.
+_EVAL_NAME_FRAGMENTS: frozenset[str] = frozenset(
+    ["eval", "grade", "grader", "judge", "benchmark", "test"]
+)
+
 
 # ---------------------------------------------------------------------------
 # Public entry points
@@ -119,7 +149,21 @@ def analyze(filepath: str, content: str) -> dict:
 
     visitor = _Analyzer(str(filepath))
     visitor.visit(tree)
-    return {"findings": visitor.findings, "cleared": visitor.cleared}
+
+    findings = visitor.findings
+    if _is_eval_context(filepath, tree):
+        findings = [
+            {
+                **f,
+                "severity": "INFO",
+                "description": f"[eval context] {f['description']}",
+            }
+            if f["rule_id"] == _LLM01
+            else f
+            for f in findings
+        ]
+
+    return {"findings": findings, "cleared": visitor.cleared}
 
 
 def collect_tainted(tree: ast.AST) -> set[str]:
@@ -269,8 +313,17 @@ class _Analyzer(ast.NodeVisitor):
                 role = role_node.value
 
                 if role in ("system", "assistant") and content_node is not None:
-                    if self._is_tainted_node(content_node):
-                        # Dangerous: user input reaches a system/assistant message.
+                    # A plain variable reference (ast.Name) is not string
+                    # interpolation — the content arrives pre-formed and there is
+                    # no injection of instructions mixed with data.  Only flag
+                    # when the content involves string construction: f-strings
+                    # (JoinedStr), concatenation (BinOp + Add), or .format()
+                    # calls that embed tainted data.
+                    if not isinstance(content_node, ast.Name) and self._is_tainted_node(
+                        content_node
+                    ):
+                        # Dangerous: tainted input is interpolated into a
+                        # system or assistant role message.
                         self.findings.append(
                             _finding(
                                 _LLM01,
@@ -369,7 +422,13 @@ class _Analyzer(ast.NodeVisitor):
     # ------------------------------------------------------------------
 
     def _is_tainted_node(self, node: ast.expr) -> bool:
-        """Return True if *node* references a tainted (user-controlled) variable."""
+        """Return True if *node* references a tainted (user-controlled) variable.
+
+        Recognises:
+        * ``ast.Name`` — plain variable reference
+        * ``ast.JoinedStr`` — f-string containing a tainted name anywhere inside
+        * ``ast.BinOp(Add)`` — string concatenation where any operand is tainted
+        """
         if isinstance(node, ast.Name):
             return node.id in self._tainted
         if isinstance(node, ast.JoinedStr):
@@ -378,6 +437,11 @@ class _Analyzer(ast.NodeVisitor):
                 if isinstance(child, ast.Name):
                     if child.id in self._tainted:
                         return True
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            # Walk the concatenation tree iteratively to avoid deep recursion.
+            for child in ast.walk(node):
+                if isinstance(child, ast.Name) and child.id in self._tainted:
+                    return True
         return False
 
 
@@ -547,6 +611,49 @@ def _finding(
         "description": description,
         "fix_suggestion": fix_suggestion,
     }
+
+
+def _is_eval_context(filepath: str, tree: ast.AST) -> bool:
+    """Return True if *filepath* / *tree* indicates an eval / test / grading harness.
+
+    Three independent heuristics are applied; any one is sufficient:
+
+    1. **Path segments** — a directory component or the file stem contains a
+       known eval/test keyword (case-insensitive): ``eval``, ``evals``,
+       ``test``, ``tests``, ``grader``, ``benchmark``, ``fixture``, etc.
+
+    2. **Imports** — the file imports a recognised eval or test library such as
+       ``pytest``, ``unittest``, ``deepeval``, ``ragas``, or ``promptfoo``.
+
+    3. **Names** — a function or class definition has a name (case-insensitive)
+       containing ``eval``, ``grade``, ``judge``, ``benchmark``, or ``test``.
+    """
+    # Heuristic 1: path segments
+    path = _Path(filepath)
+    path_parts = {p.lower() for p in path.parts}
+    # Also check the file stem (e.g. "graders" in "graders.py")
+    path_parts.add(path.stem.lower())
+    if path_parts & _EVAL_PATH_SEGMENTS:
+        return True
+
+    # Heuristic 2: imports
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] in _EVAL_IMPORT_NAMES:
+                    return True
+        elif isinstance(node, ast.ImportFrom):
+            if node.module and node.module.split(".")[0] in _EVAL_IMPORT_NAMES:
+                return True
+
+    # Heuristic 3: function / class names
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            name_lower = node.name.lower()
+            if any(frag in name_lower for frag in _EVAL_NAME_FRAGMENTS):
+                return True
+
+    return False
 
 
 # ---------------------------------------------------------------------------

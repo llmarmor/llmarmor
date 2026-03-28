@@ -1,5 +1,6 @@
 """Core scanning engine for LLM Armor."""
 
+import warnings
 from pathlib import Path
 
 from llmarmor import ast_analysis as _ast
@@ -43,7 +44,9 @@ def _scan_file(py_file: Path, content: str, findings: list[dict]) -> None:
     # (beyond SyntaxError, which analyze() handles internally) never silences
     # the regex rules.
     try:
-        ast_result = _ast.analyze(str(py_file), content)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SyntaxWarning)
+            ast_result = _ast.analyze(str(py_file), content)
         ast_findings: list[dict] = ast_result["findings"]
         cleared: set[tuple[int, str]] = ast_result["cleared"]
     except Exception:  # noqa: BLE001
