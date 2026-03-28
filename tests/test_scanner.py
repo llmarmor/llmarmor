@@ -788,6 +788,113 @@ d = db.fetch(1)
         tainted = collect_tainted(tree)
         assert not tainted, f"No variables should be tainted from safe sources; got: {tainted}"
 
+    # ------------------------------------------------------------------
+    # Eval / test context detection
+    # ------------------------------------------------------------------
+
+    def test_eval_path_downgrades_llm01_to_info(self, tmp_path: Path):
+        """File at evals/graders.py: LLM01 findings must be INFO, not CRITICAL."""
+        code = """\
+def grade(model_output, reference):
+    messages = [
+        {"role": "system", "content": f"Grade this: {model_output}"},
+    ]
+    return messages
+"""
+        result = self._analyze(tmp_path, code, filename="evals/graders.py")
+        llm01 = [f for f in result["findings"] if f["rule_id"] == "LLM01"]
+        assert llm01, (
+            "Should detect LLM01 in eval file; "
+            f"got findings: {result['findings']}"
+        )
+        for f in llm01:
+            assert f["severity"] == "INFO", (
+                f"Eval-context LLM01 must be INFO, not {f['severity']}"
+            )
+            assert "[eval context]" in f["description"], (
+                "Eval-context findings must have '[eval context]' prefix in description"
+            )
+
+    def test_pytest_import_downgrades_llm01_to_info(self, tmp_path: Path):
+        """File that imports pytest: LLM01 findings must be INFO."""
+        code = """\
+import pytest
+
+def grade(model_output):
+    messages = [
+        {"role": "system", "content": f"Grade this: {model_output}"},
+    ]
+    return messages
+"""
+        result = self._analyze(tmp_path, code, filename="graders.py")
+        llm01 = [f for f in result["findings"] if f["rule_id"] == "LLM01"]
+        assert llm01, (
+            "Should detect LLM01 in pytest-importing file; "
+            f"got findings: {result['findings']}"
+        )
+        for f in llm01:
+            assert f["severity"] == "INFO", (
+                f"pytest-importing file LLM01 must be INFO, not {f['severity']}"
+            )
+            assert "[eval context]" in f["description"], (
+                "Eval-context description must contain '[eval context]'"
+            )
+
+    def test_normal_file_keeps_critical_severity(self, tmp_path: Path):
+        """File at app/chat.py with same pattern must still produce CRITICAL findings."""
+        code = """\
+def handle(user_prompt):
+    messages = [
+        {"role": "system", "content": f"Help: {user_prompt}"},
+    ]
+    return messages
+"""
+        result = self._analyze(tmp_path, code, filename="app/chat.py")
+        llm01 = [f for f in result["findings"] if f["rule_id"] == "LLM01"]
+        assert llm01, (
+            "Should detect LLM01 in normal app file; "
+            f"got findings: {result['findings']}"
+        )
+        severities = {f["severity"] for f in llm01}
+        assert "CRITICAL" in severities, (
+            f"Normal file LLM01 must remain CRITICAL; got severities: {severities}"
+        )
+
+    def test_syntax_warning_suppressed_during_scan(self, tmp_path: Path):
+        """Scanner must not emit SyntaxWarnings for files with invalid escape sequences."""
+        import warnings as _warnings
+
+        from llmarmor.scanner import _scan_file
+
+        # \p is an invalid escape sequence — Python 3.12+ emits SyntaxWarning for these.
+        code = 'pattern = "\\p{Lu}"\nresult = "some text"\n'
+        py_file = tmp_path / "escape.py"
+        py_file.write_text(code)
+        results: list[dict] = []
+        with _warnings.catch_warnings(record=True) as caught:
+            _warnings.simplefilter("always")
+            _scan_file(py_file, code, results)
+        syntax_warnings = [w for w in caught if issubclass(w.category, SyntaxWarning)]
+        assert syntax_warnings == [], (
+            f"Scanner must suppress SyntaxWarnings; got: {syntax_warnings}"
+        )
+
+    def test_eval_context_note_in_description(self, tmp_path: Path):
+        """Eval-context findings must include the standard eval-context note."""
+        code = """\
+def grade(model_output):
+    messages = [{"role": "system", "content": f"Score: {model_output}"}]
+    return messages
+"""
+        result = self._analyze(tmp_path, code, filename="evals/grader.py")
+        llm01 = [f for f in result["findings"] if f["rule_id"] == "LLM01"]
+        assert llm01, f"Should detect LLM01; got: {result['findings']}"
+        for f in llm01:
+            assert "eval/test harness" in f["description"], (
+                "Eval-context description must mention 'eval/test harness'; "
+                f"got: {f['description']}"
+            )
+
 
 class TestSensitiveInfo:
     OPENAI_KEY = 'OPENAI_API_KEY = "sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234"'
