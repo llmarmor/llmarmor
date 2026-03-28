@@ -50,10 +50,21 @@ llmarmor rules
 
 **LLM01 — Prompt Injection:**
 - Regex: direct interpolation via f-strings, `.format()`, `%`-formatting, and string concatenation
-- AST: variable aliasing / taint propagation, role-aware dict analysis (distinguishes the safe
-  `role: user` pattern from dangerous `role: system` injection), and `str.join()` injection
-- False-positive reduction: variables named `user_prompt` that are assigned from config, database,
-  environment variables, or hardcoded strings are NOT treated as user-controlled
+- AST: source-based taint tracking — a variable is tainted **only** when assigned from a
+  user-controlled data source:
+  - HTTP request objects: `request.json[...]`, `request.form.get(...)`, `req.args[...]`
+  - Built-in stdin prompt: `input(...)`
+  - Command-line arguments: `sys.argv[n]`
+  - WebSocket messages: `websocket.receive()`, `ws.recv()`
+  - Function parameters (any argument of a `def` or `async def` statement)
+  Taint propagates through direct alias assignments (`alias = tainted_var`) but does **not**
+  propagate through function calls, so `clean = sanitize(raw)` leaves `clean` untainted.
+- Role-aware dict analysis: distinguishes the safe `role: user` pattern from dangerous
+  `role: system` / `role: assistant` injection
+- `str.join()` injection detection for tainted list elements
+- Safe-source exclusions: variables assigned from `config.get()`, `os.environ`,
+  `os.getenv()`, database calls, settings attributes, or string literals are **never**
+  treated as user-controlled, preventing false positives
 
 **LLM02 — Sensitive Info Disclosure:**
 - Regex: OpenAI, Anthropic, Google, and HuggingFace (`hf_`) token patterns with minimum key length
@@ -78,13 +89,40 @@ LLM Armor applies two complementary analysis layers to every Python file:
    patterns. Runs on all files regardless of whether they are valid Python.
 
 2. **AST layer** — Python's `ast` module parses each file into a syntax tree and performs
-   a single-pass taint-tracking analysis. This catches patterns that regex cannot detect:
-   variable aliasing, role-aware dict construction, multi-line string concatenation, and
-   `**kwargs` dict spreading. If a file has syntax errors the AST layer gracefully falls
-   back to empty output, leaving the regex results intact.
+   a single-pass source-based taint-tracking analysis. This catches patterns that regex
+   cannot detect: variable aliasing, role-aware dict construction, multi-line string
+   concatenation, and `**kwargs` dict spreading. If a file has syntax errors the AST layer
+   gracefully falls back to empty output, leaving the regex results intact.
 
-The two layers share findings deduplication: when the AST layer detects the same issue on
-the same line as the regex layer, only one finding is reported.
+### Source-Based Taint Tracking
+
+The AST layer uses **source-based** taint tracking: a variable is considered
+user-controlled only when it is assigned from a known user-data source.
+
+| Source | Example |
+|---|---|
+| HTTP request | `data = request.json["prompt"]` |
+| HTTP form | `data = request.form.get("field")` |
+| stdin prompt | `data = input("Enter: ")` |
+| CLI arguments | `data = sys.argv[1]` |
+| WebSocket | `data = websocket.receive()` |
+| Function parameter | `def handle(user_msg):` |
+
+Taint propagates through direct alias assignments (`alias = tainted`) but **not** through
+function calls, so `clean = sanitize(raw)` does not taint `clean`.
+
+The following are explicitly **not** taint sources:
+
+| Not a taint source | Example |
+|---|---|
+| Config lookup | `config.get("prompt")` |
+| Environment variable | `os.environ["PROMPT"]` / `os.getenv("PROMPT")` |
+| Database call | `db.fetch_prompt(id)` |
+| Settings attribute | `settings.DEFAULT_PROMPT` |
+| String literal | `"You are a helpful assistant."` |
+
+The two layers share findings deduplication: when both layers detect the same issue on the
+same line, only one finding is reported.
 
 ## Language Support
 

@@ -191,8 +191,9 @@ class TestASTAnalysis:
     # ------------------------------------------------------------------
 
     def test_aliased_user_input_in_system_message_flagged(self, tmp_path: Path):
-        """msg = user_input; system message with f"...{msg}..." must be flagged."""
+        """alias of input()-tainted var in system message must be flagged."""
         code = """\
+user_input = input("Enter query: ")
 msg = user_input
 messages = [
     {"role": "system", "content": f"Help: {msg}"},
@@ -200,13 +201,14 @@ messages = [
 """
         result = self._analyze(tmp_path, code)
         assert any(f["rule_id"] == "LLM01" for f in result["findings"]), (
-            "Aliased user_input in system message should produce an LLM01 finding; "
+            "Aliased input()-tainted variable in system message should produce an LLM01 finding; "
             f"got: {result['findings']}"
         )
 
     def test_double_aliased_user_input_flagged(self, tmp_path: Path):
-        """Taint should propagate through a two-step alias chain."""
+        """Taint should propagate through a two-step alias chain from input()."""
         code = """\
+user_input = input("Enter query: ")
 msg = user_input
 alias = msg
 messages = [
@@ -215,7 +217,7 @@ messages = [
 """
         result = self._analyze(tmp_path, code)
         assert any(f["rule_id"] == "LLM01" for f in result["findings"]), (
-            "Double-aliased user_input should still be flagged"
+            "Double-aliased input()-sourced variable should still be flagged"
         )
 
     def test_non_tainted_alias_not_flagged(self, tmp_path: Path):
@@ -236,44 +238,59 @@ messages = [
     # ------------------------------------------------------------------
 
     def test_system_role_with_fstring_user_input_flagged(self, tmp_path: Path):
-        """{"role": "system", "content": f"Help: {user_input}"} must be flagged."""
-        code = 'msg = {"role": "system", "content": f"Help: {user_input}"}\n'
+        """request-sourced var in system role f-string must be flagged by AST."""
+        code = """\
+user_input = request.json["prompt"]
+msg = {"role": "system", "content": f"Help: {user_input}"}
+"""
         result = self._analyze(tmp_path, code)
         assert any(f["rule_id"] == "LLM01" for f in result["findings"]), (
-            "System role with f-string user input should produce an LLM01 finding"
+            "System role with f-string containing request-sourced variable should produce an LLM01 finding"
         )
 
     def test_assistant_role_with_user_input_flagged(self, tmp_path: Path):
-        """{"role": "assistant", "content": f"...{user_input}..."} must be flagged."""
-        code = 'msg = {"role": "assistant", "content": f"Echo: {user_input}"}\n'
+        """request-sourced var in assistant role must be flagged by AST."""
+        code = """\
+user_input = request.form.get("prompt")
+msg = {"role": "assistant", "content": f"Echo: {user_input}"}
+"""
         result = self._analyze(tmp_path, code)
         assert any(f["rule_id"] == "LLM01" for f in result["findings"]), (
-            "Assistant role with user input should produce an LLM01 finding"
+            "Assistant role with request-sourced variable should produce an LLM01 finding"
         )
 
     def test_user_role_standalone_not_flagged(self, tmp_path: Path):
-        """{"role": "user", "content": user_input} must NOT produce an AST LLM01 finding."""
-        code = 'msg = {"role": "user", "content": user_input}\n'
+        """{"role": "user", "content": tainted_var} must NOT produce an AST LLM01 finding."""
+        code = """\
+user_input = input("prompt")
+msg = {"role": "user", "content": user_input}
+"""
         result = self._analyze(tmp_path, code)
         assert not any(f["rule_id"] == "LLM01" for f in result["findings"]), (
-            "User role with standalone user_input should not produce AST LLM01 finding; "
+            "User role with standalone tainted variable should not produce AST LLM01 finding; "
             f"got: {result['findings']}"
         )
 
     def test_user_role_standalone_clears_regex_line(self, tmp_path: Path):
-        """{"role": "user", "content": user_input} must clear the regex LLM01 finding."""
-        code = 'msg = {"role": "user", "content": user_input}\n'
+        """{"role": "user", "content": tainted_name} must clear any regex LLM01 on that line."""
+        code = """\
+user_input = input("prompt")
+msg = {"role": "user", "content": user_input}
+"""
         result = self._analyze(tmp_path, code)
-        assert (1, "LLM01") in result["cleared"], (
-            "User role with standalone user_input should clear the regex LLM01 finding "
+        assert (2, "LLM01") in result["cleared"], (
+            "User role with standalone tainted variable should clear the regex LLM01 finding "
             "at the same line"
         )
 
     def test_system_role_clears_regex_line(self, tmp_path: Path):
         """System role with tainted content must clear the regex LLM01 duplicate."""
-        code = 'msg = {"role": "system", "content": f"Help: {user_input}"}\n'
+        code = """\
+user_input = request.json["prompt"]
+msg = {"role": "system", "content": f"Help: {user_input}"}
+"""
         result = self._analyze(tmp_path, code)
-        assert (1, "LLM01") in result["cleared"], (
+        assert (2, "LLM01") in result["cleared"], (
             "System role detection should clear the regex LLM01 line to avoid duplicates"
         )
 
@@ -282,16 +299,20 @@ messages = [
     # ------------------------------------------------------------------
 
     def test_join_with_user_input_flagged(self, tmp_path: Path):
-        """" ".join(["Help:", user_input]) must produce an LLM01 finding."""
-        code = 'prompt = " ".join(["Help:", user_input])\n'
+        """" ".join() with an input()-sourced element must produce an LLM01 finding."""
+        code = """\
+user_input = input("query")
+prompt = " ".join(["Help:", user_input])
+"""
         result = self._analyze(tmp_path, code)
         assert any(f["rule_id"] == "LLM01" for f in result["findings"]), (
-            "str.join() with user_input should produce an LLM01 finding"
+            "str.join() with input()-sourced variable should produce an LLM01 finding"
         )
 
     def test_join_with_tainted_alias_flagged(self, tmp_path: Path):
         """str.join with a tainted alias must also be flagged."""
         code = """\
+user_input = input("query")
 msg = user_input
 prompt = " ".join(["Help:", msg])
 """
@@ -460,10 +481,11 @@ SYSTEM_PROMPT = (
     # ------------------------------------------------------------------
 
     def test_scanner_produces_llm01_for_aliased_user_input(self, tmp_path: Path):
-        """End-to-end: scanner must flag LLM01 when an alias of user_input is used."""
+        """End-to-end: scanner must flag LLM01 when an alias of a tainted source is used."""
         from llmarmor.scanner import _scan_file
 
         code = """\
+user_input = input("Enter query: ")
 msg = user_input
 messages = [
     {"role": "system", "content": f"Help: {msg}"},
@@ -486,6 +508,7 @@ messages = [
         from llmarmor.scanner import _scan_file
 
         code = """\
+user_input = input("query")
 messages = [
     {"role": "system", "content": f"Help: {user_input}"},
 ]
@@ -494,12 +517,12 @@ messages = [
         py_file.write_text(code)
         results: list[dict] = []
         _scan_file(py_file, code, results)
-        llm01_on_line_2 = [
-            f for f in results if f["rule_id"] == "LLM01" and f["line"] == 2
+        llm01_on_line_3 = [
+            f for f in results if f["rule_id"] == "LLM01" and f["line"] == 3
         ]
-        assert len(llm01_on_line_2) == 1, (
+        assert len(llm01_on_line_3) == 1, (
             "Scanner should report exactly one LLM01 finding per line, "
-            f"not duplicate both regex and AST; got: {llm01_on_line_2}"
+            f"not duplicate both regex and AST; got: {llm01_on_line_3}"
         )
 
     # ------------------------------------------------------------------
@@ -614,6 +637,156 @@ def handle(user_prompt):
             "user_prompt function parameter used in system message should be flagged; "
             f"got: {result['findings']}"
         )
+
+    # ------------------------------------------------------------------
+    # Source-based taint seeding — new sources (LLM01)
+    # ------------------------------------------------------------------
+
+    def test_input_builtin_taints_variable(self, tmp_path: Path):
+        """data = input() must seed taint; usage in system role must be flagged."""
+        code = """\
+data = input("Enter message: ")
+messages = [{"role": "system", "content": f"Help: {data}"}]
+"""
+        result = self._analyze(tmp_path, code)
+        assert any(f["rule_id"] == "LLM01" for f in result["findings"]), (
+            "Variable assigned from input() used in system role should be flagged; "
+            f"got: {result['findings']}"
+        )
+
+    def test_sys_argv_taints_variable(self, tmp_path: Path):
+        """data = sys.argv[1] must seed taint; usage in system role must be flagged."""
+        code = """\
+data = sys.argv[1]
+messages = [{"role": "system", "content": f"Help: {data}"}]
+"""
+        result = self._analyze(tmp_path, code)
+        assert any(f["rule_id"] == "LLM01" for f in result["findings"]), (
+            "Variable assigned from sys.argv[] used in system role should be flagged; "
+            f"got: {result['findings']}"
+        )
+
+    def test_websocket_receive_taints_variable(self, tmp_path: Path):
+        """data = websocket.receive() must seed taint; usage in system role must be flagged."""
+        code = """\
+data = websocket.receive()
+messages = [{"role": "system", "content": f"Help: {data}"}]
+"""
+        result = self._analyze(tmp_path, code)
+        assert any(f["rule_id"] == "LLM01" for f in result["findings"]), (
+            "Variable assigned from websocket.receive() used in system role should be flagged; "
+            f"got: {result['findings']}"
+        )
+
+    def test_websocket_recv_taints_variable(self, tmp_path: Path):
+        """data = ws.recv() (alternate spelling) must also seed taint."""
+        code = """\
+data = ws.recv()
+messages = [{"role": "system", "content": f"Help: {data}"}]
+"""
+        result = self._analyze(tmp_path, code)
+        assert any(f["rule_id"] == "LLM01" for f in result["findings"]), (
+            "Variable assigned from ws.recv() used in system role should be flagged; "
+            f"got: {result['findings']}"
+        )
+
+    def test_safe_sources_do_not_taint(self, tmp_path: Path):
+        """config.get(), os.environ, db call, and string literal must NOT taint."""
+        code = """\
+p1 = config.get("prompt")
+p2 = os.environ["PROMPT"]
+p3 = db.fetch("prompt")
+p4 = "hardcoded"
+messages = [
+    {"role": "system", "content": f"a:{p1} b:{p2} c:{p3} d:{p4}"},
+]
+"""
+        result = self._analyze(tmp_path, code)
+        assert not any(f["rule_id"] == "LLM01" for f in result["findings"]), (
+            "config, os.environ, db, and string literals should not taint variables; "
+            f"got: {result['findings']}"
+        )
+
+    def test_sanitized_tainted_value_not_propagated(self, tmp_path: Path):
+        """validated = sanitize(tainted) must NOT propagate taint (no Call propagation)."""
+        code = """\
+raw = input("query")
+validated = sanitize(raw)
+messages = [{"role": "system", "content": f"Help: {validated}"}]
+"""
+        result = self._analyze(tmp_path, code)
+        assert not any(f["rule_id"] == "LLM01" for f in result["findings"]), (
+            "Taint must not propagate through function calls; validated should be clean; "
+            f"got: {result['findings']}"
+        )
+
+    def test_async_function_parameters_tainted(self, tmp_path: Path):
+        """async def handler(msg): … must treat msg as tainted (WebSocket handler)."""
+        code = """\
+async def handler(msg):
+    messages = [{"role": "system", "content": f"Process: {msg}"}]
+    return messages
+"""
+        result = self._analyze(tmp_path, code)
+        assert any(f["rule_id"] == "LLM01" for f in result["findings"]), (
+            "Async function parameters should be treated as tainted sources; "
+            f"got: {result['findings']}"
+        )
+
+    # ------------------------------------------------------------------
+    # collect_tainted() public API
+    # ------------------------------------------------------------------
+
+    def test_collect_tainted_from_input(self, tmp_path: Path):
+        """collect_tainted() must include variables assigned from input()."""
+        import ast as _ast
+
+        from llmarmor.ast_analysis import collect_tainted
+
+        code = "data = input('q')\nalias = data\n"
+        tree = _ast.parse(code)
+        tainted = collect_tainted(tree)
+        assert "data" in tainted, f"data should be tainted; got: {tainted}"
+        assert "alias" in tainted, f"alias should be tainted (propagated); got: {tainted}"
+
+    def test_collect_tainted_from_request(self, tmp_path: Path):
+        """collect_tainted() must include variables assigned from request sources."""
+        import ast as _ast
+
+        from llmarmor.ast_analysis import collect_tainted
+
+        code = "msg = request.json['prompt']\n"
+        tree = _ast.parse(code)
+        tainted = collect_tainted(tree)
+        assert "msg" in tainted, f"msg should be tainted; got: {tainted}"
+
+    def test_collect_tainted_from_function_params(self, tmp_path: Path):
+        """collect_tainted() must include function parameters."""
+        import ast as _ast
+
+        from llmarmor.ast_analysis import collect_tainted
+
+        code = "def handle(user_input, ctx):\n    pass\n"
+        tree = _ast.parse(code)
+        tainted = collect_tainted(tree)
+        assert "user_input" in tainted, f"user_input param should be tainted; got: {tainted}"
+        assert "ctx" in tainted, f"ctx param should be tainted; got: {tainted}"
+
+    def test_collect_tainted_safe_sources_excluded(self, tmp_path: Path):
+        """collect_tainted() must NOT include variables from safe sources."""
+        import ast as _ast
+
+        from llmarmor.ast_analysis import collect_tainted
+
+        code = """\
+a = config.get("x")
+b = os.environ["KEY"]
+c = "literal"
+d = db.fetch(1)
+"""
+        tree = _ast.parse(code)
+        tainted = collect_tainted(tree)
+        assert not tainted, f"No variables should be tainted from safe sources; got: {tainted}"
 
 
 class TestSensitiveInfo:

@@ -52,13 +52,22 @@ def _scan_file(py_file: Path, content: str, findings: list[dict]) -> None:
 
     # Regex rules: skip findings on lines that AST has already handled or
     # determined to be safe (e.g. **config with max_tokens, user-role messages).
+    seen: set[tuple[str, int, str]] = set()
     for rule_checker in ALL_RULES:
         for finding in rule_checker(py_file, content):
             if (finding["line"], finding["rule_id"]) not in cleared:
-                findings.append(finding)
+                key = (finding["filepath"], finding["line"], finding["rule_id"])
+                if key not in seen:
+                    seen.add(key)
+                    findings.append(finding)
 
     # AST-specific findings (aliased variables, role-aware dicts, join, etc.).
-    findings.extend(ast_findings)
+    # Deduplicate against any regex findings already collected.
+    for finding in ast_findings:
+        key = (finding["filepath"], finding["line"], finding["rule_id"])
+        if key not in seen:
+            seen.add(key)
+            findings.append(finding)
 
 
 def _iter_python_files(root: Path):
