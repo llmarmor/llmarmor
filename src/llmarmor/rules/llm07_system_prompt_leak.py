@@ -6,7 +6,7 @@ RULE_ID = "LLM07"
 RULE_NAME = "System Prompt Leakage"
 SEVERITY = "INFO"
 
-MIN_PROMPT_LENGTH = 50
+MIN_PROMPT_LENGTH = 100
 
 # Variable assignment: system_prompt / SYSTEM_PROMPT / system_message / etc.
 SYSTEM_VAR_PATTERN = re.compile(
