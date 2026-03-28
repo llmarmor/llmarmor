@@ -34,7 +34,9 @@ CONCAT_PATTERN = re.compile(
 FIX_SUGGESTION = (
     "Validate and sanitize user input before including it in LLM prompts. "
     "Consider using an allowlist, input length limits, or a prompt-injection "
-    "detection library. Never pass raw user input directly to the LLM."
+    "detection library. Passing user input in the 'user' role is expected for "
+    "chat applications; ensure it is not injected into system prompts or other "
+    "trusted contexts where it could override instructions."
 )
 
 _CONTEXT_WINDOW = 5  # lines to look before/after for prompt context
@@ -62,7 +64,9 @@ def check_prompt_injection(filepath: str, content: str) -> list[dict]:
                         "line": i + 1,
                         "description": (
                             "User-controlled input is interpolated directly into an LLM "
-                            "prompt via an f-string, enabling prompt injection attacks."
+                            "prompt via an f-string. This is expected in the 'user' role "
+                            "for chat apps, but can enable prompt injection attacks if "
+                            "user input is embedded in system prompts or trusted contexts."
                         ),
                         "fix_suggestion": FIX_SUGGESTION,
                     }
@@ -80,7 +84,9 @@ def check_prompt_injection(filepath: str, content: str) -> list[dict]:
                     "line": i + 1,
                     "description": (
                         "User-controlled input is concatenated directly into an LLM "
-                        "prompt, enabling prompt injection attacks."
+                        "prompt. This is expected in the 'user' role for chat apps, "
+                        "but can enable prompt injection attacks if user input reaches "
+                        "system prompts or other trusted contexts."
                     ),
                     "fix_suggestion": FIX_SUGGESTION,
                 }
