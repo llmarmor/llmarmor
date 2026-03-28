@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from llmarmor import ast_analysis as _ast
 from llmarmor.rules import ALL_RULES
 
 _SKIP_DIRS = {".git", "__pycache__", ".venv", "node_modules"}
@@ -30,10 +31,34 @@ def run_scan(path: str) -> list[dict]:
         except (UnicodeDecodeError, PermissionError):
             continue
 
-        for rule_checker in ALL_RULES:
-            findings.extend(rule_checker(py_file, content))
+        _scan_file(py_file, content, findings)
 
     return findings
+
+
+def _scan_file(py_file: Path, content: str, findings: list[dict]) -> None:
+    """Run all checks on a single file and append results to *findings*."""
+    # AST analysis: additional findings + (line, rule_id) pairs to suppress.
+    # A try/except here ensures that any unexpected error in the AST analysis
+    # (beyond SyntaxError, which analyze() handles internally) never silences
+    # the regex rules.
+    try:
+        ast_result = _ast.analyze(str(py_file), content)
+        ast_findings: list[dict] = ast_result["findings"]
+        cleared: set[tuple[int, str]] = ast_result["cleared"]
+    except Exception:  # noqa: BLE001
+        ast_findings = []
+        cleared = set()
+
+    # Regex rules: skip findings on lines that AST has already handled or
+    # determined to be safe (e.g. **config with max_tokens, user-role messages).
+    for rule_checker in ALL_RULES:
+        for finding in rule_checker(py_file, content):
+            if (finding["line"], finding["rule_id"]) not in cleared:
+                findings.append(finding)
+
+    # AST-specific findings (aliased variables, role-aware dicts, join, etc.).
+    findings.extend(ast_findings)
 
 
 def _iter_python_files(root: Path):
