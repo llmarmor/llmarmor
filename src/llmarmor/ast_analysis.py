@@ -84,6 +84,83 @@ _LLM10_METHODS: frozenset[str] = frozenset(
 
 _MIN_SYSTEM_PROMPT_LEN = 100
 
+# ---------------------------------------------------------------------------
+# Eval / test context detection
+# ---------------------------------------------------------------------------
+
+# Path fragments that suggest a file is an eval/test harness.
+_EVAL_PATH_FRAGMENTS: frozenset[str] = frozenset(
+    ["eval", "evals", "test", "tests", "grader", "graders", "benchmark", "benchmarks", "fixture", "fixtures"]
+)
+
+# Top-level import names that indicate an eval/test framework is in use.
+_EVAL_IMPORT_NAMES: frozenset[str] = frozenset(
+    ["pytest", "unittest", "deepeval", "ragas", "promptfoo", "langsmith", "evaluate"]
+)
+
+# Fragments that appear in function or class names in eval/grading code.
+_EVAL_DEF_FRAGMENTS: frozenset[str] = frozenset(
+    ["eval", "grade", "grader", "judge", "benchmark", "test"]
+)
+
+_EVAL_CONTEXT_NOTE = (
+    "This file appears to be an eval/test harness. "
+    "Variables interpolated into prompts are likely test data, "
+    "not user-controlled input."
+)
+
+
+def _is_eval_context(filepath: str, tree: ast.Module) -> bool:
+    """Return True when *filepath* / *tree* looks like an eval or test harness.
+
+    Heuristics (any one is sufficient):
+
+    1. A path segment of *filepath* matches a known eval/test fragment.
+    2. The file imports a known eval framework (``pytest``, ``unittest``, etc.).
+    3. A top-level function or class name contains an eval/test fragment.
+    """
+    import os
+
+    # 1. Path-based detection.
+    path_parts = {p.lower() for p in os.path.normpath(filepath).split(os.sep) if p}
+    if path_parts & _EVAL_PATH_FRAGMENTS:
+        return True
+
+    # 2. Import-based detection.
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = alias.name.split(".")[0].lower()
+                if root in _EVAL_IMPORT_NAMES:
+                    return True
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                root = node.module.split(".")[0].lower()
+                if root in _EVAL_IMPORT_NAMES:
+                    return True
+
+    # 3. Function/class-name-based detection (top-level and nested).
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            name_lower = node.name.lower()
+            if any(frag in name_lower for frag in _EVAL_DEF_FRAGMENTS):
+                return True
+
+    return False
+
+
+def _downgrade_to_eval_context(findings: list[dict]) -> list[dict]:
+    """Return a copy of *findings* with severity downgraded to INFO and descriptions
+    prefixed with ``[eval context]`` plus the standard eval context note.
+    """
+    result = []
+    for f in findings:
+        updated = dict(f)
+        updated["severity"] = "INFO"
+        updated["description"] = f"[eval context] {f['description']} {_EVAL_CONTEXT_NOTE}"
+        result.append(updated)
+    return result
+
 
 # ---------------------------------------------------------------------------
 # Public entry points
@@ -119,7 +196,19 @@ def analyze(filepath: str, content: str) -> dict:
 
     visitor = _Analyzer(str(filepath))
     visitor.visit(tree)
-    return {"findings": visitor.findings, "cleared": visitor.cleared}
+
+    findings = visitor.findings
+    # When the file looks like an eval/test harness, downgrade all LLM01 findings
+    # to INFO so that false positives from test-data interpolation are not reported
+    # as CRITICAL.  LLM07 and LLM10 findings are left at their original severity
+    # because system-prompt leakage and unbounded consumption are still relevant
+    # in eval contexts.
+    if findings and _is_eval_context(str(filepath), tree):
+        findings = _downgrade_to_eval_context(
+            [f for f in findings if f.get("rule_id") == _LLM01]
+        ) + [f for f in findings if f.get("rule_id") != _LLM01]
+
+    return {"findings": findings, "cleared": visitor.cleared}
 
 
 def collect_tainted(tree: ast.AST) -> set[str]:
