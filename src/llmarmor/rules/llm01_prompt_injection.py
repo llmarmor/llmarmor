@@ -8,8 +8,7 @@ SEVERITY = "CRITICAL"
 
 _USER_INPUT_ALT = (
     r"user_input|user_message|user_query|user_text|user_prompt|"
-    r"request|input|query|message|user_data|user_content|"
-    r"user_request|human_input|human_message"
+    r"user_data|user_content|user_request|human_input|human_message"
 )
 
 # Patterns for LLM prompt contexts
@@ -32,11 +31,10 @@ CONCAT_PATTERN = re.compile(
 )
 
 FIX_SUGGESTION = (
-    "Validate and sanitize user input before including it in LLM prompts. "
-    "Consider using an allowlist, input length limits, or a prompt-injection "
-    "detection library. Passing user input in the 'user' role is expected for "
-    "chat applications; ensure it is not injected into system prompts or other "
-    "trusted contexts where it could override instructions."
+    "Avoid interpolating user input directly into prompt strings. Instead, pass "
+    "user input as a separate 'role: user' message without interpolation. If you "
+    "must include user input in a prompt template, validate and sanitize it first "
+    "— consider input length limits, allowlists, or a prompt-injection detection library."
 )
 
 _CONTEXT_WINDOW = 5  # lines to look before/after for prompt context
@@ -63,10 +61,10 @@ def check_prompt_injection(filepath: str, content: str) -> list[dict]:
                         "filepath": str(filepath),
                         "line": i + 1,
                         "description": (
-                            "User-controlled input is interpolated directly into an LLM "
-                            "prompt via an f-string. This is expected in the 'user' role "
-                            "for chat apps, but can enable prompt injection attacks if "
-                            "user input is embedded in system prompts or trusted contexts."
+                            "User input is interpolated into a prompt string via an f-string. "
+                            "If this constructs a system or assistant message, it may enable "
+                            "prompt injection. Passing user input as a separate 'role: user' "
+                            "message without interpolation is the recommended safe pattern."
                         ),
                         "fix_suggestion": FIX_SUGGESTION,
                     }
@@ -83,10 +81,10 @@ def check_prompt_injection(filepath: str, content: str) -> list[dict]:
                     "filepath": str(filepath),
                     "line": i + 1,
                     "description": (
-                        "User-controlled input is concatenated directly into an LLM "
-                        "prompt. This is expected in the 'user' role for chat apps, "
-                        "but can enable prompt injection attacks if user input reaches "
-                        "system prompts or other trusted contexts."
+                        "User input is interpolated into a prompt string via string "
+                        "concatenation. If this constructs a system or assistant message, "
+                        "it may enable prompt injection. Passing user input as a separate "
+                        "'role: user' message without interpolation is the recommended safe pattern."
                     ),
                     "fix_suggestion": FIX_SUGGESTION,
                 }
