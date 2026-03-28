@@ -788,6 +788,117 @@ d = db.fetch(1)
         tainted = collect_tainted(tree)
         assert not tainted, f"No variables should be tainted from safe sources; got: {tainted}"
 
+    # ------------------------------------------------------------------
+    # Plain variable reference in message dicts (false-positive prevention)
+    # ------------------------------------------------------------------
+
+    def test_system_role_plain_variable_not_flagged(self, tmp_path: Path):
+        """Issue: {'role': 'system', 'content': system} must NOT be flagged.
+
+        Passing a variable as the content value without string interpolation is
+        the standard, safe way to build an OpenAI messages list.  The variable
+        may come from config, a database, or any safe source — there is no
+        injection risk unless the value is interpolated into a string.
+        """
+        code = """\
+def handle(system):
+    messages = [{"role": "system", "content": system}]
+    return messages
+"""
+        result = self._analyze(tmp_path, code)
+        llm01 = [f for f in result["findings"] if f["rule_id"] == "LLM01"]
+        assert llm01 == [], (
+            "Plain variable reference in system role must not produce LLM01 finding; "
+            f"got: {llm01}"
+        )
+
+    def test_user_role_plain_variable_not_flagged(self, tmp_path: Path):
+        """Issue: {'role': 'user', 'content': user} must NOT be flagged."""
+        code = """\
+def handle(user):
+    messages = [{"role": "user", "content": user}]
+    return messages
+"""
+        result = self._analyze(tmp_path, code)
+        llm01 = [f for f in result["findings"] if f["rule_id"] == "LLM01"]
+        assert llm01 == [], (
+            "Plain variable reference in user role must not produce LLM01 finding; "
+            f"got: {llm01}"
+        )
+
+    def test_exact_issue_pattern_not_flagged(self, tmp_path: Path):
+        """Issue: the exact pattern from the bug report must NOT be flagged.
+
+        messages = [
+            {'role': 'system', 'content': system},
+            {'role': 'user',   'content': user},
+        ]
+        Both variables are plain references — no f-string, no concatenation.
+        """
+        code = """\
+def build_messages(system, user):
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user",   "content": user},
+    ]
+    return messages
+"""
+        result = self._analyze(tmp_path, code)
+        llm01 = [f for f in result["findings"] if f["rule_id"] == "LLM01"]
+        assert llm01 == [], (
+            "Exact issue pattern (plain variables in both system and user roles) "
+            f"must not be flagged; got: {llm01}"
+        )
+
+    def test_system_role_fstring_still_flagged(self, tmp_path: Path):
+        """After the fix, system role f-string with tainted var must still be FLAGGED."""
+        code = """\
+def handle(user_input):
+    messages = [{"role": "system", "content": f"Help: {user_input}"}]
+    return messages
+"""
+        result = self._analyze(tmp_path, code)
+        llm01 = [f for f in result["findings"] if f["rule_id"] == "LLM01"]
+        assert llm01, (
+            "System role with f-string interpolating a tainted variable must be flagged; "
+            f"got: {result['findings']}"
+        )
+
+    def test_system_role_concatenation_flagged(self, tmp_path: Path):
+        """System role with string concatenation of a tainted variable must be FLAGGED."""
+        code = """\
+user_input = input("q")
+messages = [{"role": "system", "content": "Help: " + user_input}]
+"""
+        result = self._analyze(tmp_path, code)
+        llm01 = [f for f in result["findings"] if f["rule_id"] == "LLM01"]
+        assert llm01, (
+            "System role with string concatenation of a tainted variable must be flagged; "
+            f"got: {result['findings']}"
+        )
+
+    def test_scanner_plain_vars_in_both_roles_not_flagged(self, tmp_path: Path):
+        """End-to-end: scanner must not produce any finding for the issue pattern."""
+        from llmarmor.scanner import _scan_file
+
+        code = """\
+def build_messages(system, user):
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user",   "content": user},
+    ]
+    return messages
+"""
+        py_file = tmp_path / "test.py"
+        py_file.write_text(code)
+        results: list[dict] = []
+        _scan_file(py_file, code, results)
+        llm01 = [f for f in results if f["rule_id"] == "LLM01"]
+        assert llm01 == [], (
+            "Scanner must not flag plain variable references in message dicts; "
+            f"got: {llm01}"
+        )
+
 
 class TestSensitiveInfo:
     OPENAI_KEY = 'OPENAI_API_KEY = "sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234"'

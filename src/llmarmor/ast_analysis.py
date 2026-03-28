@@ -269,8 +269,14 @@ class _Analyzer(ast.NodeVisitor):
                 role = role_node.value
 
                 if role in ("system", "assistant") and content_node is not None:
-                    if self._is_tainted_node(content_node):
-                        # Dangerous: user input reaches a system/assistant message.
+                    # Only flag when there is actual string *interpolation* of tainted
+                    # data (f-string or concatenation).  A plain variable reference like
+                    # ``{"role": "system", "content": system_var}`` is the standard, safe
+                    # way to pass a pre-built prompt and must NOT be flagged regardless of
+                    # whether the variable happens to be in the tainted set.
+                    if self._is_tainted_interpolation(content_node):
+                        # Dangerous: tainted data is interpolated into a system/assistant
+                        # message via an f-string or concatenation expression.
                         self.findings.append(
                             _finding(
                                 _LLM01,
@@ -280,7 +286,8 @@ class _Analyzer(ast.NodeVisitor):
                                 node.lineno,
                                 (
                                     "User input is interpolated into a system or assistant "
-                                    "role message. This may enable prompt injection attacks. "
+                                    "role message via string interpolation (f-string or "
+                                    "concatenation). This may enable prompt injection attacks. "
                                     "Pass user input only as a separate 'role: user' message "
                                     "without string interpolation."
                                 ),
@@ -294,10 +301,12 @@ class _Analyzer(ast.NodeVisitor):
                         self.cleared.add((node.lineno, _LLM01))
 
                 elif role == "user" and content_node is not None:
-                    # Safe pattern: user input as standalone value in a user-role message.
-                    # Only suppress the regex false positive when content is a bare name
-                    # (no f-string wrapping).  An f-string in a user-role message may
-                    # still be flagged by the regex rule intentionally.
+                    # User-role messages with a plain variable reference are safe:
+                    # ``{"role": "user", "content": user_var}`` is the standard pattern
+                    # and should not produce any regex false positive.
+                    # Only suppress the regex finding when content is a bare name reference
+                    # (not an f-string).  An f-string in a user-role message may still be
+                    # flagged by the regex rule as a suspicious pattern.
                     if isinstance(content_node, ast.Name) and self._is_tainted_node(
                         content_node
                     ):
@@ -378,6 +387,32 @@ class _Analyzer(ast.NodeVisitor):
                 if isinstance(child, ast.Name):
                     if child.id in self._tainted:
                         return True
+        return False
+
+    def _is_tainted_interpolation(self, node: ast.expr) -> bool:
+        """Return True only when *node* is a string *interpolation* that uses tainted data.
+
+        A plain ``ast.Name`` reference (bare variable) is intentionally excluded —
+        ``{"role": "system", "content": system_var}`` is the standard, safe way to
+        pass a pre-built prompt and should never be flagged on its own.
+
+        Recognised interpolation forms:
+        * ``ast.JoinedStr`` — f-strings (e.g. ``f"Help: {user_input}"``).
+        * ``ast.BinOp`` with ``ast.Add`` — string concatenation
+          (e.g. ``"Help: " + user_input``).  The entire BinOp subtree is walked so
+          that multi-operand chains like ``"a" + b + c + d`` are handled correctly
+          regardless of nesting depth.
+        """
+        if isinstance(node, ast.JoinedStr):
+            for child in ast.walk(node):
+                if isinstance(child, ast.Name) and child.id in self._tainted:
+                    return True
+            return False
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            for child in ast.walk(node):
+                if isinstance(child, ast.Name) and child.id in self._tainted:
+                    return True
+            return False
         return False
 
 
