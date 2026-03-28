@@ -8,7 +8,7 @@ SEVERITY = "MEDIUM"
 
 # LLM API call patterns
 API_CALL_PATTERN = re.compile(
-    r"\.(completions\.create|messages\.create|chat\.complete|generate)\s*\(",
+    r"\.(chat\.completions\.create|completions\.create|messages\.create|chat\.complete)\s*\(",
     re.IGNORECASE,
 )
 
@@ -47,7 +47,7 @@ def check_unbounded_consumption(filepath: str, content: str) -> list[dict]:
                     "line": i + 1,
                     "description": (
                         "LLM API call without max_tokens set. This can lead to "
-                        "unexpectedly large responses, high costs, and denial-of-wallet attacks."
+                        "unexpectedly large responses and higher-than-expected costs."
                     ),
                     "fix_suggestion": FIX_SUGGESTION,
                 }

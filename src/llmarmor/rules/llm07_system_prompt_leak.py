@@ -4,7 +4,7 @@ import re
 
 RULE_ID = "LLM07"
 RULE_NAME = "System Prompt Leakage"
-SEVERITY = "HIGH"
+SEVERITY = "INFO"
 
 MIN_PROMPT_LENGTH = 50
 
@@ -23,9 +23,9 @@ ROLE_SYSTEM_PATTERN = re.compile(
 )
 
 FIX_SUGGESTION = (
-    "Do not hardcode system prompts in client-side or version-controlled code. "
-    "Load system prompts from environment variables, a secrets manager, or a "
-    "server-side configuration store that is not exposed to end users."
+    "Hardcoded system prompts in source code are visible to anyone with repository "
+    "access. If the prompt contains sensitive business logic or secrets, load it from "
+    "environment variables or a server-side configuration store instead."
 )
 
 
@@ -51,8 +51,9 @@ def check_system_prompt_leak(filepath: str, content: str) -> list[dict]:
                     "line": i + 1,
                     "description": (
                         "Hardcoded system prompt detected in a variable assignment. "
-                        "System prompts in source code are visible to anyone with "
-                        "repository access and may expose business logic or secrets."
+                        "In server-side code this is often acceptable; flag if the "
+                        "prompt contains sensitive business logic, secrets, or is "
+                        "bundled in client-facing or public code."
                     ),
                     "fix_suggestion": FIX_SUGGESTION,
                 }
@@ -71,8 +72,9 @@ def check_system_prompt_leak(filepath: str, content: str) -> list[dict]:
                     "line": i + 1,
                     "description": (
                         'Hardcoded system prompt in {"role": "system", "content": ...} '
-                        "literal. System prompts in source code expose business logic "
-                        "to anyone with repository access."
+                        "literal. In server-side code this is often acceptable; flag "
+                        "if the prompt contains sensitive logic or is exposed in "
+                        "client-facing or public code."
                     ),
                     "fix_suggestion": FIX_SUGGESTION,
                 }

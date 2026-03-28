@@ -107,7 +107,7 @@ class TestSystemPromptLeak:
         findings = check_system_prompt_leak(tmp_path / "vuln.py", self.VULNERABLE_CODE)
         assert len(findings) >= 1
         assert findings[0]["rule_id"] == "LLM07"
-        assert findings[0]["severity"] == "HIGH"
+        assert findings[0]["severity"] == "INFO"
 
     def test_no_finding_for_env_var_prompt(self, tmp_path: Path):
         findings = check_system_prompt_leak(tmp_path / "safe.py", self.SAFE_CODE)
@@ -138,3 +138,15 @@ response = client.chat.completions.create(
     def test_no_finding_when_max_tokens_set(self, tmp_path: Path):
         findings = check_unbounded_consumption(tmp_path / "safe.py", self.SAFE_CODE)
         assert findings == []
+
+    def test_no_finding_for_images_generate(self, tmp_path: Path):
+        """images.generate is not an LLM text call — should not trigger LLM10."""
+        code = '''\
+response = client.images.generate(
+    model="dall-e-3",
+    prompt="A sunset over the ocean",
+    n=1,
+)
+'''
+        findings = check_unbounded_consumption(tmp_path / "img.py", code)
+        assert findings == [], f"images.generate should not trigger LLM10: {findings}"
