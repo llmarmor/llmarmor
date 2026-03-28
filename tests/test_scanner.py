@@ -58,6 +58,15 @@ messages=[
     {"role": "user", "content": validated_input},
 ]
 '''
+    # Pattern 1: safe — user_input passed as a standalone value (no interpolation)
+    SAFE_CODE_STANDALONE_USER_INPUT = '''\
+messages=[
+    {"role": "system", "content": system_prompt},
+    {"role": "user", "content": user_input},
+]
+'''
+    # String concatenation into a prompt variable
+    CONCAT_VULNERABLE_CODE = 'prompt = "Help: " + user_input\n'
 
     def test_detects_fstring_with_user_input(self, tmp_path: Path):
         findings = check_prompt_injection(tmp_path / "vuln.py", self.VULNERABLE_CODE)
@@ -68,6 +77,23 @@ messages=[
     def test_no_finding_on_safe_code(self, tmp_path: Path):
         findings = check_prompt_injection(tmp_path / "safe.py", self.SAFE_CODE)
         assert findings == []
+
+    def test_no_finding_when_user_input_is_standalone_content_value(self, tmp_path: Path):
+        """Pattern 1: 'content': user_input (no f-string, no concatenation) is safe."""
+        findings = check_prompt_injection(
+            tmp_path / "safe.py", self.SAFE_CODE_STANDALONE_USER_INPUT
+        )
+        assert findings == [], (
+            "Passing user_input as a standalone 'content' value should NOT be flagged; "
+            f"got: {findings}"
+        )
+
+    def test_detects_string_concatenation_with_user_input(self, tmp_path: Path):
+        """String concatenation of user input into a prompt variable must be flagged."""
+        findings = check_prompt_injection(tmp_path / "vuln.py", self.CONCAT_VULNERABLE_CODE)
+        assert len(findings) >= 1
+        assert findings[0]["rule_id"] == "LLM01"
+        assert findings[0]["severity"] == "CRITICAL"
 
 
 class TestSensitiveInfo:
