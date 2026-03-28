@@ -17,9 +17,9 @@ PROMPT_CONTEXT = re.compile(
     re.IGNORECASE,
 )
 
-# f-string containing a user-input variable interpolation: f"...{user_input}..."
+# f-string containing a user-input variable interpolation (single or triple quoted)
 FSTRING_PATTERN = re.compile(
-    r"f['\"].*?\{(" + _USER_INPUT_ALT + r")[^}]*\}"
+    r'f(?:"""|\'\'\'|["\']).*?\{(' + _USER_INPUT_ALT + r")[^}]*\}"
 )
 
 # String concatenation with user input in prompt context
@@ -27,6 +27,24 @@ CONCAT_PATTERN = re.compile(
     r"(?:content|prompt|message)\s*[=+]\s*['\"][^'\"]*['\"\s]*\+\s*("
     + _USER_INPUT_ALT
     + r")\b",
+    re.IGNORECASE,
+)
+
+# .format() call with user input variable as argument
+FORMAT_PATTERN = re.compile(
+    r"\.format\s*\([^)]*\b(" + _USER_INPUT_ALT + r")\b",
+    re.IGNORECASE,
+)
+
+# Percent-formatting with user input: "..." % user_input or "..." % (user_input, ...)
+PERCENT_FORMAT_PATTERN = re.compile(
+    r'["\'][^"\']*%[sd][^"\']*["\']\s*%\s*\(?\s*(' + _USER_INPUT_ALT + r")\b",
+    re.IGNORECASE,
+)
+
+# LangChain PromptTemplate with a user-input variable placeholder in the template
+LANGCHAIN_PATTERN = re.compile(
+    r"PromptTemplate(?:\.from_template)?\s*\(.*?\{(?:" + _USER_INPUT_ALT + r")[^}]*\}",
     re.IGNORECASE,
 )
 
@@ -46,12 +64,17 @@ def check_prompt_injection(filepath: str, content: str) -> list[dict]:
     lines = content.splitlines()
 
     for i, line in enumerate(lines):
+        stripped = line.strip()
+        # Skip comment-only lines
+        if stripped.startswith("#"):
+            continue
+
+        start = max(0, i - _CONTEXT_WINDOW)
+        end = min(len(lines), i + _CONTEXT_WINDOW + 1)
+        context = "\n".join(lines[start:end])
+
         # Check for f-string with a user-input variable
         if FSTRING_PATTERN.search(line):
-            # Look in nearby lines for a prompt-construction context
-            start = max(0, i - _CONTEXT_WINDOW)
-            end = min(len(lines), i + _CONTEXT_WINDOW + 1)
-            context = "\n".join(lines[start:end])
             if PROMPT_CONTEXT.search(context):
                 findings.append(
                     {
@@ -70,6 +93,68 @@ def check_prompt_injection(filepath: str, content: str) -> list[dict]:
                     }
                 )
                 continue
+
+        # Check for .format() call with user input variable as argument
+        if FORMAT_PATTERN.search(line):
+            if PROMPT_CONTEXT.search(context):
+                findings.append(
+                    {
+                        "rule_id": RULE_ID,
+                        "rule_name": RULE_NAME,
+                        "severity": SEVERITY,
+                        "filepath": str(filepath),
+                        "line": i + 1,
+                        "description": (
+                            "User input is interpolated into a prompt string via .format(). "
+                            "If this constructs a system or assistant message, it may enable "
+                            "prompt injection. Passing user input as a separate 'role: user' "
+                            "message without interpolation is the recommended safe pattern."
+                        ),
+                        "fix_suggestion": FIX_SUGGESTION,
+                    }
+                )
+                continue
+
+        # Check for percent-formatting with user input
+        if PERCENT_FORMAT_PATTERN.search(line):
+            if PROMPT_CONTEXT.search(context):
+                findings.append(
+                    {
+                        "rule_id": RULE_ID,
+                        "rule_name": RULE_NAME,
+                        "severity": SEVERITY,
+                        "filepath": str(filepath),
+                        "line": i + 1,
+                        "description": (
+                            "User input is interpolated into a prompt string via "
+                            "%-formatting. If this constructs a system or assistant "
+                            "message, it may enable prompt injection. Passing user "
+                            "input as a separate 'role: user' message without "
+                            "interpolation is the recommended safe pattern."
+                        ),
+                        "fix_suggestion": FIX_SUGGESTION,
+                    }
+                )
+                continue
+
+        # Check for LangChain PromptTemplate with user input variable
+        if LANGCHAIN_PATTERN.search(line):
+            findings.append(
+                {
+                    "rule_id": RULE_ID,
+                    "rule_name": RULE_NAME,
+                    "severity": SEVERITY,
+                    "filepath": str(filepath),
+                    "line": i + 1,
+                    "description": (
+                        "LangChain PromptTemplate with a user-input variable placeholder "
+                        "detected. If user input is passed to this template without "
+                        "validation, it may enable prompt injection attacks."
+                    ),
+                    "fix_suggestion": FIX_SUGGESTION,
+                }
+            )
+            continue
 
         # Check for string concatenation with user input in a prompt context
         if CONCAT_PATTERN.search(line):
