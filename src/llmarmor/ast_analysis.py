@@ -37,6 +37,28 @@ _USER_INPUT_NAMES: frozenset[str] = frozenset(
     ]
 )
 
+# Root receiver names for objects that are considered safe config/DB sources.
+# Assignments like ``user_prompt = config.get("x")`` or
+# ``user_prompt = settings.DEFAULT`` are NOT treated as user-controlled.
+_SAFE_RECEIVER_PREFIXES: frozenset[str] = frozenset(
+    [
+        "config",
+        "cfg",
+        "conf",
+        "settings",
+        "db",
+        "database",
+        "dao",
+        "repo",
+        "repository",
+        "cache",
+    ]
+)
+
+# Root receiver names for HTTP request objects.
+# Assignments like ``user_prompt = request.json["prompt"]`` ARE user-controlled.
+_REQUEST_RECEIVER_PREFIXES: frozenset[str] = frozenset(["request", "req"])
+
 # Fragments that identify system-prompt variable names (case-insensitive).
 _SYSTEM_PROMPT_FRAGMENTS: frozenset[str] = frozenset(
     ["system_prompt", "system_message", "sys_prompt"]
@@ -111,6 +133,11 @@ class _Analyzer(ast.NodeVisitor):
         self._tainted: set[str] = set()
         # Config-dict tracking: var name → set of string keys in its dict literal.
         self._config_dicts: dict[str, set[str]] = {}
+        # Variables in _USER_INPUT_NAMES that were explicitly assigned from a
+        # known-safe source (string literal, config/db/env call, settings attr).
+        # These are removed from the taint set so names like ``user_prompt`` that
+        # are loaded from config or a database do not generate false positives.
+        self._safe_assigned: set[str] = set()
 
     # ------------------------------------------------------------------
     # Assignments — taint propagation, config-dict tracking, LLM07
@@ -123,9 +150,25 @@ class _Analyzer(ast.NodeVisitor):
             name = target.id
             rhs = node.value
 
-            # Taint propagation: msg = user_input  →  msg is tainted
+            # Safe-assignment tracking: when a _USER_INPUT_NAMES variable is
+            # assigned from a provably non-user-controlled source, remove it from
+            # the tainted set to avoid false positives.
+            if name in _USER_INPUT_NAMES:
+                if _is_safe_rhs(rhs):
+                    self._safe_assigned.add(name)
+                elif _is_request_rhs(rhs):
+                    # Explicitly dangerous — undo any previous safe assignment.
+                    self._safe_assigned.discard(name)
+                # For any other RHS (unknown variable, call from unknown object,
+                # etc.) we leave the existing state unchanged: conservative
+                # (the name is tainted by default via _USER_INPUT_NAMES unless
+                # it has already been recorded in _safe_assigned).
+
+            # Taint propagation: msg = user_input  →  msg is tainted.
+            # Respect _safe_assigned so that a safe-assigned _USER_INPUT_NAMES
+            # variable does not propagate taint to aliases.
             if isinstance(rhs, ast.Name):
-                if rhs.id in _USER_INPUT_NAMES or rhs.id in self._tainted:
+                if _is_name_tainted(rhs.id, self._tainted, self._safe_assigned):
                     self._tainted.add(name)
 
             # Config-dict tracking for LLM10 **config suppression.
@@ -283,12 +326,12 @@ class _Analyzer(ast.NodeVisitor):
     def _is_tainted_node(self, node: ast.expr) -> bool:
         """Return True if *node* references a known user-input or tainted variable."""
         if isinstance(node, ast.Name):
-            return node.id in _USER_INPUT_NAMES or node.id in self._tainted
+            return _is_name_tainted(node.id, self._tainted, self._safe_assigned)
         if isinstance(node, ast.JoinedStr):
             # Walk the f-string for any tainted Name reference.
             for child in ast.walk(node):
                 if isinstance(child, ast.Name):
-                    if child.id in _USER_INPUT_NAMES or child.id in self._tainted:
+                    if _is_name_tainted(child.id, self._tainted, self._safe_assigned):
                         return True
         return False
 
@@ -348,6 +391,110 @@ def _attr_chain(node: ast.expr) -> str:
         parent = _attr_chain(node.value)
         return f"{parent}.{node.attr}" if parent else node.attr
     return ""
+
+
+def _receiver_root(node: ast.expr) -> str:
+    """Return the root Name identifier of an attribute/subscript chain.
+
+    Examples::
+
+        os.environ["KEY"]   → "os"
+        request.form.get()  → "request"
+        config.get()        → "config"
+    """
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return _receiver_root(node.value)
+    if isinstance(node, ast.Subscript):
+        return _receiver_root(node.value)
+    return ""
+
+
+def _is_safe_rhs(node: ast.expr) -> bool:
+    """Return True if *node* is a provably non-user-controlled source.
+
+    Safe sources include:
+
+    * String literals (``"hardcoded string"``)
+    * ``os.getenv(...)`` and ``os.environ[...]``
+    * Method calls whose receiver root is a known config/DB object
+      (``config.get(...)``, ``db.fetch_prompt(...)``, etc.)
+    * Attribute accesses on known config/settings objects
+      (``settings.DEFAULT_PROMPT``)
+    """
+    # Hardcoded string literal
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return True
+
+    # Call expressions — config.get(...), db.fetch(...), os.getenv(...)
+    if isinstance(node, ast.Call):
+        func = node.func
+        if isinstance(func, ast.Attribute):
+            root = _receiver_root(func.value)
+            if root == "os" and func.attr in ("getenv",):
+                return True
+            if root in _SAFE_RECEIVER_PREFIXES:
+                return True
+
+    # Subscript — os.environ["KEY"]
+    if isinstance(node, ast.Subscript):
+        value = node.value
+        if isinstance(value, ast.Attribute):
+            root = _receiver_root(value.value)
+            if root == "os" and value.attr == "environ":
+                return True
+
+    # Bare attribute access — settings.DEFAULT_PROMPT
+    if isinstance(node, ast.Attribute):
+        root = _receiver_root(node.value)
+        if root in _SAFE_RECEIVER_PREFIXES:
+            return True
+
+    return False
+
+
+def _is_request_rhs(node: ast.expr) -> bool:
+    """Return True if *node* originates from an HTTP request (user-controlled).
+
+    Matches patterns such as ``request.json["prompt"]``,
+    ``request.form.get("prompt")``, or ``req.args["q"]``.
+    """
+    # Subscript — request.json["key"], request.form["key"]
+    if isinstance(node, ast.Subscript):
+        if _receiver_root(node.value) in _REQUEST_RECEIVER_PREFIXES:
+            return True
+
+    # Call — request.form.get("key"), request.get_json(), req.json()
+    if isinstance(node, ast.Call):
+        if _receiver_root(node.func) in _REQUEST_RECEIVER_PREFIXES:
+            return True
+
+    # Bare attribute — request.json (assigned to a variable)
+    if isinstance(node, ast.Attribute):
+        if _receiver_root(node.value) in _REQUEST_RECEIVER_PREFIXES:
+            return True
+
+    return False
+
+
+def _is_name_tainted(
+    name: str, tainted: set[str], safe_assigned: set[str]
+) -> bool:
+    """Return True if *name* carries user-controlled data.
+
+    A name is tainted if any of the following conditions are true:
+
+    * It appears in ``_USER_INPUT_NAMES`` and has NOT been explicitly assigned
+      from a safe source (i.e., not in *safe_assigned*).  Variables in
+      ``_USER_INPUT_NAMES`` are considered user-controlled by default; a
+      safe assignment (string literal, config/db/env call) neutralises this.
+    * It appears in the propagated *tainted* set because it was aliased from
+      another tainted variable (e.g. ``msg = user_input``).
+    """
+    if name in _USER_INPUT_NAMES and name not in safe_assigned:
+        return True
+    return name in tainted
 
 
 def _is_llm10_call(method: str) -> bool:

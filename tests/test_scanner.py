@@ -502,6 +502,119 @@ messages = [
             f"not duplicate both regex and AST; got: {llm01_on_line_2}"
         )
 
+    # ------------------------------------------------------------------
+    # Safe-assignment de-taint tests (false-positive prevention)
+    # ------------------------------------------------------------------
+
+    def test_user_prompt_hardcoded_string_not_flagged(self, tmp_path: Path):
+        """user_prompt = "hardcoded" must NOT be treated as user-controlled."""
+        code = """\
+user_prompt = "You are a helpful assistant"
+messages = [{"role": "system", "content": f"{user_prompt}"}]
+"""
+        result = self._analyze(tmp_path, code)
+        assert not any(f["rule_id"] == "LLM01" for f in result["findings"]), (
+            "Hardcoded string assigned to user_prompt should not be flagged; "
+            f"got: {result['findings']}"
+        )
+
+    def test_user_prompt_config_get_not_flagged(self, tmp_path: Path):
+        """user_prompt = config.get("prompt") must NOT be flagged."""
+        code = """\
+user_prompt = config.get("default_prompt")
+messages = [{"role": "system", "content": f"Context: {user_prompt}"}]
+"""
+        result = self._analyze(tmp_path, code)
+        assert not any(f["rule_id"] == "LLM01" for f in result["findings"]), (
+            "config.get() assignment to user_prompt should not be flagged; "
+            f"got: {result['findings']}"
+        )
+
+    def test_user_prompt_db_fetch_not_flagged(self, tmp_path: Path):
+        """user_prompt = db.fetch_prompt(id) must NOT be flagged."""
+        code = """\
+user_prompt = db.fetch_prompt(prompt_id)
+messages = [{"role": "system", "content": f"Help: {user_prompt}"}]
+"""
+        result = self._analyze(tmp_path, code)
+        assert not any(f["rule_id"] == "LLM01" for f in result["findings"]), (
+            "db.fetch_prompt() assignment to user_prompt should not be flagged; "
+            f"got: {result['findings']}"
+        )
+
+    def test_user_prompt_os_environ_not_flagged(self, tmp_path: Path):
+        """user_prompt = os.environ["PROMPT"] must NOT be flagged."""
+        code = """\
+user_prompt = os.environ["PROMPT"]
+messages = [{"role": "system", "content": f"{user_prompt}"}]
+"""
+        result = self._analyze(tmp_path, code)
+        assert not any(f["rule_id"] == "LLM01" for f in result["findings"]), (
+            "os.environ[] assignment to user_prompt should not be flagged; "
+            f"got: {result['findings']}"
+        )
+
+    def test_user_prompt_os_getenv_not_flagged(self, tmp_path: Path):
+        """user_prompt = os.getenv("PROMPT") must NOT be flagged."""
+        code = """\
+user_prompt = os.getenv("PROMPT")
+messages = [{"role": "system", "content": f"{user_prompt}"}]
+"""
+        result = self._analyze(tmp_path, code)
+        assert not any(f["rule_id"] == "LLM01" for f in result["findings"]), (
+            "os.getenv() assignment to user_prompt should not be flagged; "
+            f"got: {result['findings']}"
+        )
+
+    def test_user_prompt_settings_attr_not_flagged(self, tmp_path: Path):
+        """user_prompt = settings.DEFAULT_PROMPT must NOT be flagged."""
+        code = """\
+user_prompt = settings.DEFAULT_PROMPT
+messages = [{"role": "system", "content": f"{user_prompt}"}]
+"""
+        result = self._analyze(tmp_path, code)
+        assert not any(f["rule_id"] == "LLM01" for f in result["findings"]), (
+            "settings.DEFAULT_PROMPT assignment to user_prompt should not be flagged; "
+            f"got: {result['findings']}"
+        )
+
+    def test_user_prompt_from_request_json_flagged(self, tmp_path: Path):
+        """user_prompt = request.json["prompt"] MUST be flagged."""
+        code = """\
+user_prompt = request.json["prompt"]
+messages = [{"role": "system", "content": f"Help: {user_prompt}"}]
+"""
+        result = self._analyze(tmp_path, code)
+        assert any(f["rule_id"] == "LLM01" for f in result["findings"]), (
+            "request.json[] assignment to user_prompt should be flagged; "
+            f"got: {result['findings']}"
+        )
+
+    def test_user_prompt_from_request_form_flagged(self, tmp_path: Path):
+        """user_prompt = request.form.get("prompt") MUST be flagged."""
+        code = """\
+user_prompt = request.form.get("prompt")
+messages = [{"role": "system", "content": f"Help: {user_prompt}"}]
+"""
+        result = self._analyze(tmp_path, code)
+        assert any(f["rule_id"] == "LLM01" for f in result["findings"]), (
+            "request.form.get() assignment to user_prompt should be flagged; "
+            f"got: {result['findings']}"
+        )
+
+    def test_user_prompt_as_function_parameter_flagged(self, tmp_path: Path):
+        """def handle(user_prompt): … used in f-string MUST be flagged."""
+        code = """\
+def handle(user_prompt):
+    messages = [{"role": "system", "content": f"Help: {user_prompt}"}]
+    return messages
+"""
+        result = self._analyze(tmp_path, code)
+        assert any(f["rule_id"] == "LLM01" for f in result["findings"]), (
+            "user_prompt function parameter used in system message should be flagged; "
+            f"got: {result['findings']}"
+        )
+
 
 class TestSensitiveInfo:
     OPENAI_KEY = 'OPENAI_API_KEY = "sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234"'
