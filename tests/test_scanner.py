@@ -1136,3 +1136,421 @@ response = client.chat.completions.create(
         assert "kwargs" in findings[0]["description"], (
             "Description should mention kwargs when **kwargs is present in the call block"
         )
+
+
+# ---------------------------------------------------------------------------
+# Tests for new features: strict mode, formatters, path truncation
+# ---------------------------------------------------------------------------
+
+
+class TestStrictMode:
+    """Tests for strict mode (--strict flag) behavior."""
+
+    def _analyze_strict(self, tmp_path: Path, code: str) -> dict:
+        from llmarmor.ast_analysis import analyze
+        py_file = tmp_path / "test_strict.py"
+        py_file.write_text(code)
+        return analyze(str(py_file), code, strict=True)
+
+    def _analyze_normal(self, tmp_path: Path, code: str) -> dict:
+        from llmarmor.ast_analysis import analyze
+        py_file = tmp_path / "test_normal.py"
+        py_file.write_text(code)
+        return analyze(str(py_file), code, strict=False)
+
+    # ------------------------------------------------------------------
+    # Strict mode: plain tainted variable in system role
+    # ------------------------------------------------------------------
+
+    def test_strict_system_role_plain_tainted_var_flagged(self, tmp_path: Path):
+        """In strict mode, plain tainted variable as system content must be flagged."""
+        code = """\
+def handle(system, user):
+    msg = {"role": "system", "content": system}
+    return msg
+"""
+        result = self._analyze_strict(tmp_path, code)
+        assert any(f["rule_id"] == "LLM01" for f in result["findings"]), (
+            "Strict mode: plain tainted variable as system content should be flagged; "
+            f"got: {result['findings']}"
+        )
+
+    def test_normal_system_role_plain_tainted_var_not_flagged(self, tmp_path: Path):
+        """In normal mode, plain tainted variable as system content must NOT be flagged."""
+        code = """\
+def handle(system, user):
+    msg = {"role": "system", "content": system}
+    return msg
+"""
+        result = self._analyze_normal(tmp_path, code)
+        assert not any(f["rule_id"] == "LLM01" for f in result["findings"]), (
+            "Normal mode: plain tainted variable as system content should NOT be flagged; "
+            f"got: {result['findings']}"
+        )
+
+    def test_strict_system_role_plain_var_is_medium_severity(self, tmp_path: Path):
+        """In strict mode, plain tainted var in system role must be MEDIUM severity."""
+        code = """\
+def handle(system):
+    msg = {"role": "system", "content": system}
+    return msg
+"""
+        result = self._analyze_strict(tmp_path, code)
+        llm01 = [f for f in result["findings"] if f["rule_id"] == "LLM01"]
+        assert llm01, "Expected LLM01 finding in strict mode"
+        assert llm01[0]["severity"] == "MEDIUM", (
+            f"Expected MEDIUM severity in strict mode; got: {llm01[0]['severity']}"
+        )
+
+    def test_strict_user_role_plain_tainted_var_flagged(self, tmp_path: Path):
+        """In strict mode, plain tainted variable as user content must be flagged."""
+        code = """\
+def handle(user):
+    msg = {"role": "user", "content": user}
+    return msg
+"""
+        result = self._analyze_strict(tmp_path, code)
+        assert any(f["rule_id"] == "LLM01" for f in result["findings"]), (
+            "Strict mode: plain tainted variable as user content should be flagged; "
+            f"got: {result['findings']}"
+        )
+
+    def test_normal_user_role_plain_tainted_var_not_flagged(self, tmp_path: Path):
+        """In normal mode, plain tainted variable as user content must NOT be flagged."""
+        code = """\
+def handle(user):
+    msg = {"role": "user", "content": user}
+    return msg
+"""
+        result = self._analyze_normal(tmp_path, code)
+        assert not any(f["rule_id"] == "LLM01" for f in result["findings"]), (
+            "Normal mode: plain tainted variable as user content should NOT be flagged; "
+            f"got: {result['findings']}"
+        )
+
+    def test_strict_user_role_plain_var_message_mentions_sanitization(self, tmp_path: Path):
+        """In strict mode, user-role plain-var finding should mention sanitization."""
+        code = """\
+def handle(user):
+    msg = {"role": "user", "content": user}
+    return msg
+"""
+        result = self._analyze_strict(tmp_path, code)
+        llm01 = [f for f in result["findings"] if f["rule_id"] == "LLM01"]
+        assert llm01, "Expected LLM01 finding in strict mode"
+        desc_lower = llm01[0]["description"].lower()
+        assert "sanitization" in desc_lower or "validation" in desc_lower, (
+            f"User-role strict mode description should mention sanitization/validation; "
+            f"got: {llm01[0]['description']}"
+        )
+
+    # ------------------------------------------------------------------
+    # Strict mode: LLM07 hardcoded system prompt messaging
+    # ------------------------------------------------------------------
+
+    def test_strict_llm07_is_medium_severity(self, tmp_path: Path):
+        """In strict mode, hardcoded system prompt must be MEDIUM severity."""
+        from llmarmor.rules.llm07_system_prompt_leak import check_system_prompt_leak
+        code = (
+            'SYSTEM_PROMPT = "You are a helpful customer service assistant for Acme Corp. '
+            'You have access to customer databases and can process refunds up to $500."'
+        )
+        findings = check_system_prompt_leak(tmp_path / "vuln.py", code, strict=True)
+        assert findings, "Expected LLM07 finding in strict mode"
+        assert findings[0]["severity"] == "MEDIUM", (
+            f"Strict mode LLM07 should be MEDIUM; got: {findings[0]['severity']}"
+        )
+
+    def test_normal_llm07_is_info_severity(self, tmp_path: Path):
+        """In normal mode, hardcoded system prompt must remain INFO severity."""
+        from llmarmor.rules.llm07_system_prompt_leak import check_system_prompt_leak
+        code = (
+            'SYSTEM_PROMPT = "You are a helpful customer service assistant for Acme Corp. '
+            'You have access to customer databases and can process refunds up to $500."'
+        )
+        findings = check_system_prompt_leak(tmp_path / "vuln.py", code, strict=False)
+        assert findings, "Expected LLM07 finding in normal mode"
+        assert findings[0]["severity"] == "INFO", (
+            f"Normal mode LLM07 should be INFO; got: {findings[0]['severity']}"
+        )
+
+    def test_strict_llm07_message_mentions_exposure(self, tmp_path: Path):
+        """In strict mode, LLM07 description must mention exposure/published code."""
+        from llmarmor.rules.llm07_system_prompt_leak import check_system_prompt_leak
+        code = (
+            'SYSTEM_PROMPT = "You are a helpful customer service assistant for Acme Corp. '
+            'You have access to customer databases and can process refunds up to $500."'
+        )
+        findings = check_system_prompt_leak(tmp_path / "vuln.py", code, strict=True)
+        assert findings, "Expected LLM07 finding"
+        desc = findings[0]["description"].lower()
+        assert "published" in desc or "open source" in desc or "visible" in desc, (
+            f"Strict mode LLM07 description should mention publication/visibility; "
+            f"got: {findings[0]['description']}"
+        )
+
+    def test_strict_run_scan_passes_strict_through(self, tmp_path: Path):
+        """run_scan(strict=True) must produce MEDIUM LLM07 findings."""
+        code = (
+            'SYSTEM_PROMPT = "You are a helpful customer service assistant for Acme Corp. '
+            'You have access to customer databases and can process refunds up to $500."\n'
+        )
+        py_file = tmp_path / "app.py"
+        py_file.write_text(code)
+        findings = run_scan(str(tmp_path), strict=True)
+        llm07 = [f for f in findings if f["rule_id"] == "LLM07"]
+        assert llm07, f"Expected LLM07 in strict scan; got: {findings}"
+        assert llm07[0]["severity"] == "MEDIUM", (
+            f"strict run_scan LLM07 should be MEDIUM; got: {llm07[0]['severity']}"
+        )
+
+    # ------------------------------------------------------------------
+    # Strict mode: f-string injection still works normally
+    # ------------------------------------------------------------------
+
+    def test_strict_fstring_injection_still_flagged_critical(self, tmp_path: Path):
+        """F-string tainted injection in system role must remain CRITICAL in strict mode."""
+        code = """\
+def handle(user_input):
+    msg = {"role": "system", "content": f"Help: {user_input}"}
+    return msg
+"""
+        result = self._analyze_strict(tmp_path, code)
+        llm01 = [f for f in result["findings"] if f["rule_id"] == "LLM01"]
+        assert llm01, "Expected LLM01 finding for f-string in strict mode"
+        assert llm01[0]["severity"] == "CRITICAL", (
+            f"F-string injection should still be CRITICAL in strict mode; "
+            f"got: {llm01[0]['severity']}"
+        )
+
+
+class TestFormatters:
+    """Tests for output formatters (grouped, flat, json, markdown)."""
+
+    _SAMPLE_FINDINGS = [
+        {
+            "rule_id": "LLM01",
+            "rule_name": "Prompt Injection",
+            "severity": "CRITICAL",
+            "filepath": "app/chat.py",
+            "line": 42,
+            "description": "User input is interpolated into system role.",
+            "fix_suggestion": "Pass user input as a separate 'role: user' message.",
+        },
+        {
+            "rule_id": "LLM10",
+            "rule_name": "Unbounded Consumption",
+            "severity": "MEDIUM",
+            "filepath": "app/chat.py",
+            "line": 75,
+            "description": "LLM API call without max_tokens.",
+            "fix_suggestion": "Set max_tokens on LLM API calls.",
+        },
+        {
+            "rule_id": "LLM10",
+            "rule_name": "Unbounded Consumption",
+            "severity": "MEDIUM",
+            "filepath": "api/handler.py",
+            "line": 30,
+            "description": "LLM API call without max_tokens.",
+            "fix_suggestion": "Set max_tokens on LLM API calls.",
+        },
+    ]
+
+    def _make_console(self):
+        from io import StringIO
+        from rich.console import Console
+        return Console(file=StringIO(), width=120)
+
+    def _get_output(self, console) -> str:
+        return console.file.getvalue()
+
+    # ------------------------------------------------------------------
+    # JSON format
+    # ------------------------------------------------------------------
+
+    def test_json_output_is_valid_json(self, capsys):
+        """json format must produce valid JSON."""
+        import json as _json
+        from rich.console import Console
+        from io import StringIO
+        from llmarmor.formatters import format_json
+        console = Console(file=StringIO(), width=120)
+        format_json(self._SAMPLE_FINDINGS, console, "/some/path")
+        captured = capsys.readouterr()
+        parsed = _json.loads(captured.out)
+        assert isinstance(parsed, list), f"JSON output should be a list; got: {type(parsed)}"
+        assert len(parsed) == 3, f"Expected 3 findings in JSON; got: {len(parsed)}"
+
+    def test_json_output_has_required_keys(self, capsys):
+        """Each JSON finding must have the standard keys."""
+        import json as _json
+        from rich.console import Console
+        from io import StringIO
+        from llmarmor.formatters import format_json
+        console = Console(file=StringIO(), width=120)
+        format_json(self._SAMPLE_FINDINGS, console, "/some/path")
+        captured = capsys.readouterr()
+        parsed = _json.loads(captured.out)
+        required_keys = {"rule_id", "rule_name", "severity", "filepath", "line", "description", "fix_suggestion"}
+        for finding in parsed:
+            missing = required_keys - finding.keys()
+            assert not missing, f"JSON finding missing keys: {missing}"
+
+    # ------------------------------------------------------------------
+    # Markdown format
+    # ------------------------------------------------------------------
+
+    def test_markdown_output_has_header(self, capsys):
+        """Markdown output must start with '# LLM Armor Scan Report'."""
+        from rich.console import Console
+        from io import StringIO
+        from llmarmor.formatters import format_markdown
+        console = Console(file=StringIO(), width=120)
+        format_markdown(self._SAMPLE_FINDINGS, console, "/some/path")
+        captured = capsys.readouterr()
+        assert "# LLM Armor Scan Report" in captured.out, (
+            f"Markdown output should start with H1; got: {captured.out[:200]}"
+        )
+
+    def test_markdown_output_has_rule_sections(self, capsys):
+        """Markdown output must contain H2 sections for each rule."""
+        from rich.console import Console
+        from io import StringIO
+        from llmarmor.formatters import format_markdown
+        console = Console(file=StringIO(), width=120)
+        format_markdown(self._SAMPLE_FINDINGS, console, "/some/path")
+        captured = capsys.readouterr()
+        assert "## LLM01" in captured.out, "Markdown should have LLM01 section"
+        assert "## LLM10" in captured.out, "Markdown should have LLM10 section"
+
+    def test_markdown_output_has_table(self, capsys):
+        """Markdown output must contain a table with File and Line columns."""
+        from rich.console import Console
+        from io import StringIO
+        from llmarmor.formatters import format_markdown
+        console = Console(file=StringIO(), width=120)
+        format_markdown(self._SAMPLE_FINDINGS, console, "/some/path")
+        captured = capsys.readouterr()
+        assert "| File | Line |" in captured.out, (
+            f"Markdown should contain a table header; got: {captured.out[:500]}"
+        )
+
+    def test_markdown_output_has_scanned_path(self, capsys):
+        """Markdown output must include the scanned path."""
+        from rich.console import Console
+        from io import StringIO
+        from llmarmor.formatters import format_markdown
+        console = Console(file=StringIO(), width=120)
+        format_markdown(self._SAMPLE_FINDINGS, console, "/my/project")
+        captured = capsys.readouterr()
+        assert "/my/project" in captured.out, (
+            "Markdown output should include the scanned path"
+        )
+
+    # ------------------------------------------------------------------
+    # Grouped format
+    # ------------------------------------------------------------------
+
+    def test_grouped_output_groups_by_rule(self):
+        """Grouped format must show each rule_id as a section header."""
+        from llmarmor.formatters import format_grouped
+        console = self._make_console()
+        format_grouped(self._SAMPLE_FINDINGS, console, "/some/path")
+        output = self._get_output(console)
+        assert "LLM01" in output, "Grouped output should show LLM01 section"
+        assert "LLM10" in output, "Grouped output should show LLM10 section"
+
+    def test_grouped_output_shows_all_locations(self):
+        """Grouped format must list all file:line references per rule."""
+        from llmarmor.formatters import format_grouped
+        console = self._make_console()
+        format_grouped(self._SAMPLE_FINDINGS, console, "/some/path")
+        output = self._get_output(console)
+        assert "42" in output, "Grouped output should show line 42"
+        assert "75" in output, "Grouped output should show line 75"
+        assert "30" in output, "Grouped output should show line 30"
+
+    def test_grouped_output_shows_summary(self):
+        """Grouped format must include a summary line."""
+        from llmarmor.formatters import format_grouped
+        console = self._make_console()
+        format_grouped(self._SAMPLE_FINDINGS, console, "/some/path")
+        output = self._get_output(console)
+        assert "Summary" in output, "Grouped output should include Summary"
+        assert "3" in output, "Summary should mention 3 findings"
+
+    def test_grouped_output_no_findings(self):
+        """Grouped format with no findings must show 'No vulnerabilities detected'."""
+        from llmarmor.formatters import format_grouped
+        console = self._make_console()
+        format_grouped([], console, "/some/path")
+        output = self._get_output(console)
+        assert "No vulnerabilities detected" in output
+
+    # ------------------------------------------------------------------
+    # Flat format
+    # ------------------------------------------------------------------
+
+    def test_flat_output_shows_findings(self):
+        """Flat format must show each finding."""
+        from llmarmor.formatters import format_flat
+        console = self._make_console()
+        format_flat(self._SAMPLE_FINDINGS, console, "/some/path")
+        output = self._get_output(console)
+        assert "LLM01" in output
+        assert "LLM10" in output
+
+    def test_flat_output_no_findings(self):
+        """Flat format with no findings must show 'No vulnerabilities detected'."""
+        from llmarmor.formatters import format_flat
+        console = self._make_console()
+        format_flat([], console, "/some/path")
+        output = self._get_output(console)
+        assert "No vulnerabilities detected" in output
+
+    # ------------------------------------------------------------------
+    # render() dispatcher
+    # ------------------------------------------------------------------
+
+    def test_render_unknown_format_raises(self):
+        """render() must raise ValueError for unknown format."""
+        from rich.console import Console
+        from io import StringIO
+        from llmarmor.formatters import render
+        console = Console(file=StringIO(), width=120)
+        with pytest.raises(ValueError, match="Unknown format"):
+            render(self._SAMPLE_FINDINGS, fmt="xls", console=console, scan_path="/p")
+
+
+class TestPathTruncation:
+    """Tests for the path truncation helper."""
+
+    def test_short_path_not_truncated(self):
+        """Paths shorter than max_width must be returned unchanged."""
+        from llmarmor.formatters import truncate_path
+        path = "src/app.py"
+        assert truncate_path(path, max_width=80) == path
+
+    def test_long_path_truncated_from_middle(self):
+        """Paths longer than max_width must have middle truncated."""
+        from llmarmor.formatters import truncate_path
+        path = "src/very/long/deeply/nested/directory/structure/handlers/chat.py"
+        result = truncate_path(path, max_width=40)
+        assert len(result) <= 40, f"Result should be ≤40 chars; got {len(result)}: {result!r}"
+        assert result.endswith("chat.py"), f"Result should end with filename; got: {result!r}"
+        assert "..." in result, f"Result should contain ellipsis; got: {result!r}"
+
+    def test_truncated_path_length_respected(self):
+        """Truncated path must not exceed max_width."""
+        from llmarmor.formatters import truncate_path
+        path = "a" * 100 + "/b" * 50 + "/file.py"
+        result = truncate_path(path, max_width=50)
+        assert len(result) <= 50, f"Truncated path too long: {len(result)}: {result!r}"
+
+    def test_truncated_path_preserves_filename(self):
+        """Truncated path must always end with the original filename."""
+        from llmarmor.formatters import truncate_path
+        path = "/home/user/projects/my-very-long-project-name/src/deep/nested/module.py"
+        result = truncate_path(path, max_width=40)
+        assert result.endswith("module.py"), f"Filename must be preserved; got: {result!r}"

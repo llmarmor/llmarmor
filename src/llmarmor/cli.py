@@ -3,18 +3,12 @@
 import click
 from rich.console import Console
 from rich.panel import Panel
-from rich.table import Table
 
 from llmarmor import __version__
+from llmarmor.formatters import VALID_FORMATS, render
 from llmarmor.scanner import run_scan
 
 console = Console()
-
-_SEVERITY_COLORS = {
-    "CRITICAL": "bold red",
-    "HIGH": "bold yellow",
-    "MEDIUM": "yellow",
-}
 
 _RULE_GROUPS = [
     (
@@ -56,69 +50,48 @@ def main() -> None:
 
 @main.command()
 @click.argument("path", default=".", type=click.Path(exists=True))
-def scan(path: str) -> None:
+@click.option(
+    "--strict",
+    is_flag=True,
+    default=False,
+    help=(
+        "Enable strict scanning. Flags borderline patterns including plain tainted "
+        "variables in role messages and promotes INFO findings to WARNING/MEDIUM."
+    ),
+)
+@click.option(
+    "--format",
+    "-f",
+    "fmt",
+    default="grouped",
+    show_default=True,
+    type=click.Choice(VALID_FORMATS, case_sensitive=False),
+    help="Output format: grouped (default), flat, json, md/markdown.",
+)
+def scan(path: str, strict: bool, fmt: str) -> None:
     """Scan PATH for LLM security vulnerabilities."""
-    console.print(
-        Panel(
-            f"[bold green]LLM Armor v{__version__}[/bold green]\n"
-            f"Scanning: [cyan]{path}[/cyan]",
-            title="🛡️ LLM Armor",
-            border_style="blue",
-        )
-    )
-
-    findings = run_scan(path)
-
-    if not findings:
-        console.print("[green]✅ No vulnerabilities detected.[/green]")
-        return
-
-    # Group by severity
-    for severity in ("CRITICAL", "HIGH", "MEDIUM"):
-        group = [f for f in findings if f["severity"] == severity]
-        if not group:
-            continue
-
-        color = _SEVERITY_COLORS[severity]
-        table = Table(
-            title=f"[{color}]{severity}[/{color}] — {len(group)} finding(s)",
-            show_lines=True,
-        )
-        table.add_column("Rule", style="bold", width=8)
-        table.add_column("File", no_wrap=False)
-        table.add_column("Line", width=6)
-        table.add_column("Description")
-
-        for f in group:
-            table.add_row(
-                f["rule_id"],
-                f["filepath"],
-                str(f["line"]),
-                f["description"],
+    # For non-JSON/markdown formats, show the header panel.
+    if fmt not in ("json", "md", "markdown"):
+        mode_label = " [bold yellow](strict mode)[/bold yellow]" if strict else ""
+        console.print(
+            Panel(
+                f"[bold green]LLM Armor v{__version__}[/bold green]{mode_label}\n"
+                f"Scanning: [cyan]{path}[/cyan]",
+                title="🛡️ LLM Armor",
+                border_style="blue",
             )
-
-        console.print(table)
-
-    # Summary panel
-    totals = {sev: sum(1 for f in findings if f["severity"] == sev) for sev in _SEVERITY_COLORS}
-    summary_lines = [f"[bold]Total findings: {len(findings)}[/bold]"]
-    for sev, count in totals.items():
-        if count:
-            color = _SEVERITY_COLORS[sev]
-            summary_lines.append(f"  [{color}]{sev}[/{color}]: {count}")
-
-    console.print(
-        Panel(
-            "\n".join(summary_lines),
-            title="📊 Scan Summary",
-            border_style="yellow",
         )
-    )
+
+    findings = run_scan(path, strict=strict)
+
+    render(findings, fmt=fmt, console=console, scan_path=path)
 
 
 @main.command()
 def rules() -> None:
     """List all OWASP LLM Top 10 rules grouped by support status."""
+    from rich.table import Table
+
     for group_name, icon, rule_entries in _RULE_GROUPS:
         table = Table(
             title=f"{icon} {group_name}",
@@ -135,3 +108,4 @@ def rules() -> None:
 
 if __name__ == "__main__":
     main()
+

@@ -120,7 +120,7 @@ _EVAL_NAME_FRAGMENTS: frozenset[str] = frozenset(
 # ---------------------------------------------------------------------------
 
 
-def analyze(filepath: str, content: str) -> dict:
+def analyze(filepath: str, content: str, strict: bool = False) -> dict:
     """Run AST-based checks on *content*.
 
     Returns a dict with two keys:
@@ -141,13 +141,22 @@ def analyze(filepath: str, content: str) -> dict:
     If *content* cannot be parsed as valid Python the function returns
     ``{"findings": [], "cleared": set()}`` so callers never need to handle
     exceptions.
+
+    When *strict* is ``True``, additional borderline patterns are flagged:
+
+    * A plain tainted variable used as the ``content`` of a system/assistant
+      role message (MEDIUM severity).
+    * A plain tainted variable used as the ``content`` of a user role message
+      (LOW severity).
+    * Hardcoded system prompts are promoted from INFO to MEDIUM severity with
+      more detailed messaging about exposure risk.
     """
     try:
         tree = ast.parse(content, filename=str(filepath))
     except SyntaxError:
         return {"findings": [], "cleared": set()}
 
-    visitor = _Analyzer(str(filepath))
+    visitor = _Analyzer(str(filepath), strict=strict)
     visitor.visit(tree)
 
     findings = visitor.findings
@@ -199,8 +208,9 @@ def collect_tainted(tree: ast.AST) -> set[str]:
 class _Analyzer(ast.NodeVisitor):
     """Single-pass AST visitor that accumulates findings and cleared-line pairs."""
 
-    def __init__(self, filepath: str) -> None:
+    def __init__(self, filepath: str, strict: bool = False) -> None:
         self.filepath = filepath
+        self.strict = strict
         self.findings: list[dict] = []
         # (1-based line, rule_id) pairs — matching regex findings are suppressed.
         self.cleared: set[tuple[int, str]] = set()
@@ -275,19 +285,31 @@ class _Analyzer(ast.NodeVisitor):
             if _is_system_prompt_var(name):
                 extracted = _concat_string(rhs)
                 if extracted is not None and len(extracted) > _MIN_SYSTEM_PROMPT_LEN:
+                    if self.strict:
+                        severity = "MEDIUM"
+                        description = (
+                            "System prompt is hardcoded in source code. "
+                            "If this code is published (open source, client-side bundle, "
+                            "shared package), the prompt contents will be visible to users. "
+                            "This may leak proprietary instructions, internal tool descriptions, "
+                            "or behavioral constraints that could be exploited. "
+                            "Move to environment variables or a secure config service."
+                        )
+                    else:
+                        severity = "INFO"
+                        description = (
+                            "System prompt is hardcoded in source code. "
+                            "Consider moving to environment variables or a config file "
+                            "for easier management and to prevent exposure in version control."
+                        )
                     self.findings.append(
                         _finding(
                             _LLM07,
                             "System Prompt Leakage",
-                            "INFO",
+                            severity,
                             self.filepath,
                             node.lineno,
-                            (
-                                "Hardcoded system prompt detected in source code. "
-                                "In server-side code this is often acceptable; flag "
-                                "if the prompt contains sensitive business logic or "
-                                "is bundled in client-facing or public code."
-                            ),
+                            description,
                             (
                                 "Move system prompts to environment variables or a "
                                 "secure config file."
@@ -346,15 +368,62 @@ class _Analyzer(ast.NodeVisitor):
                         # Suppress the regex LLM01 finding at this line (same issue).
                         self.cleared.add((node.lineno, _LLM01))
 
+                    elif (
+                        self.strict
+                        and isinstance(content_node, ast.Name)
+                        and self._is_tainted_node(content_node)
+                    ):
+                        # Strict mode: plain tainted variable as system/assistant content.
+                        # The user controls the entire message content — flag as MEDIUM.
+                        self.findings.append(
+                            _finding(
+                                _LLM01,
+                                "Prompt Injection",
+                                "MEDIUM",
+                                self.filepath,
+                                node.lineno,
+                                (
+                                    f"Tainted variable passed directly as {role} message content. "
+                                    "If the variable contains unsanitized user input, the user "
+                                    "controls the entire system instruction."
+                                ),
+                                (
+                                    "Validate and sanitize the variable before using it as "
+                                    "system message content, or use a fixed system prompt."
+                                ),
+                            )
+                        )
+
                 elif role == "user" and content_node is not None:
-                    # Safe pattern: user input as standalone value in a user-role message.
-                    # Only suppress the regex false positive when content is a bare name
-                    # (no f-string wrapping).  An f-string in a user-role message may
-                    # still be flagged by the regex rule intentionally.
                     if isinstance(content_node, ast.Name) and self._is_tainted_node(
                         content_node
                     ):
-                        self.cleared.add((node.lineno, _LLM01))
+                        if self.strict:
+                            # Strict mode: flag plain tainted variable in user role too.
+                            self.findings.append(
+                                _finding(
+                                    _LLM01,
+                                    "Prompt Injection",
+                                    "MEDIUM",
+                                    self.filepath,
+                                    node.lineno,
+                                    (
+                                        "User input is passed directly without sanitization. "
+                                        "Consider input validation and length limits."
+                                    ),
+                                    (
+                                        "Validate user input before passing it to the LLM. "
+                                        "Apply length limits and content filtering."
+                                    ),
+                                )
+                            )
+                        else:
+                            # Safe pattern (normal mode): user input as standalone value in a
+                            # user-role message.  Only suppress the regex false positive when
+                            # content is a bare name (no f-string wrapping).  An f-string in a
+                            # user-role message may still be flagged by the regex rule.
+                            self.cleared.add((node.lineno, _LLM01))
+
 
         self.generic_visit(node)
 
