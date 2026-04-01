@@ -37,6 +37,12 @@ def scan_notebook_file(filepath: str, content: str) -> list[dict]:
     # We import lazily to avoid circular imports at module load time.
     from llmarmor.scanner import _scan_file as _python_scan_file
 
+    # Running total of source lines seen across all preceding cells.
+    # Used to convert per-cell line numbers into notebook-level line numbers
+    # so that reported line numbers point to the correct location even when
+    # a finding is in a later cell.
+    notebook_line = 0
+
     for cell in cells:
         cell_type = cell.get("cell_type", "")
         source = cell.get("source", [])
@@ -46,6 +52,13 @@ def scan_notebook_file(filepath: str, content: str) -> list[dict]:
             cell_text = "".join(source)
         else:
             cell_text = str(source)
+
+        cell_source_lines = cell_text.splitlines()
+        # Record where this cell starts in the notebook's logical line space,
+        # then advance the counter *before* any early-continue so that empty
+        # cells are still accounted for in the running total.
+        cell_start = notebook_line
+        notebook_line += len(cell_source_lines)
 
         if not cell_text.strip():
             continue
@@ -69,11 +82,13 @@ def scan_notebook_file(filepath: str, content: str) -> list[dict]:
                 if f["rule_id"] == "LLM01":
                     continue
                 f["filepath"] = filepath
+                # Offset cell-relative line numbers to notebook-level numbers.
+                f["line"] = cell_start + f["line"]
                 findings.append(f)
 
         elif cell_type in ("markdown", "raw"):
             # Scan for accidentally committed API keys in markdown text.
-            for line_idx, line in enumerate(cell_text.splitlines()):
+            for line_idx, line in enumerate(cell_source_lines):
                 if not line.strip() or TEST_VAR_PATTERN.search(line):
                     continue
                 for pattern, key_type in SECRET_PATTERNS:
@@ -85,7 +100,8 @@ def scan_notebook_file(filepath: str, content: str) -> list[dict]:
                                 "rule_name": "Sensitive Information Disclosure",
                                 "severity": "HIGH",
                                 "filepath": filepath,
-                                "line": line_idx + 1,
+                                # Offset to notebook-level line number.
+                                "line": cell_start + line_idx + 1,
                                 "description": (
                                     f"Hardcoded {key_type} found in a notebook "
                                     "markdown/text cell. Committing secrets to version "

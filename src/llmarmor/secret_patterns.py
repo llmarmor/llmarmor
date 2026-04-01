@@ -14,8 +14,13 @@ import re
 # classes of false positives:
 #   • URL path slugs like "sk-the-model-to-adopt-a-persona" (no digits)
 #   • Env-var name references like "sk-OPENAI_API_KEY_HERE" (no digits)
+#
+# The negative lookbehind (?<![A-Za-z0-9]) ensures "sk-" is not preceded by
+# an alphanumeric character, eliminating false positives from words that
+# contain the substring "sk-" (e.g. "ask-", "task-", Markdown anchor slugs
+# like "#step-3-ask-gpt-4-1-to-critique-the-prompt").
 OPENAI_KEY_PATTERN = re.compile(
-    r"sk-(?!ant-)(?=[A-Za-z0-9_-]*[0-9])(?:[A-Za-z0-9_-]{20,})"
+    r"(?<![A-Za-z0-9])sk-(?!ant-)(?=[A-Za-z0-9_-]*[0-9])(?:[A-Za-z0-9_-]{20,})"
 )
 
 # Anthropic keys: sk-ant- followed by 20+ chars.

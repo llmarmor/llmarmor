@@ -1027,6 +1027,20 @@ msg = {"role": "system", "content": f"Help: {tainted_var}"}
         findings = check_sensitive_info(tmp_path / "safe.py", line)
         assert findings == [], f"URL slug without digits should not be flagged; got: {findings}"
 
+    def test_does_not_flag_sk_inside_word(self, tmp_path: Path):
+        """'sk-' embedded inside a longer word (e.g. 'ask-gpt-4-1-...') must not be flagged.
+
+        Regression test: Markdown anchor slugs like '#step-3-ask-gpt-4-1-to-critique'
+        contain the substring 'sk-gpt-4-1-...' (hidden inside 'ask-').  The
+        negative lookbehind (?<![A-Za-z0-9]) prevents this from matching.
+        """
+        # Simulates the anchor href from the Prompt_migration_guide.ipynb TOC.
+        line = 'url = "#step-3-ask-gpt-4-1-to-critique-the-prompt"\n'
+        findings = check_sensitive_info(tmp_path / "safe.py", line)
+        assert findings == [], (
+            f"'sk-' inside a word like 'ask-' should not be flagged; got: {findings}"
+        )
+
     def test_still_flags_real_key_with_digits(self, tmp_path: Path):
         """Real OpenAI keys that contain digits must still be detected."""
         line = 'key = "sk-proj-AbCdEf123456789abcdefghij"\n'
@@ -2104,6 +2118,108 @@ class TestNotebookHandler:
         assert llm02 == [], (
             "Markdown cell mentioning OPENAI_API_KEY (env var name) should not "
             f"trigger LLM02; got: {llm02}"
+        )
+
+    def test_no_false_positive_for_ask_url_anchor_in_markdown(self, tmp_path):
+        """Markdown anchor slugs containing 'ask-gpt-4-1-...' must not trigger LLM02.
+
+        Regression test for Prompt_migration_guide.ipynb: the TOC line
+          - [Step 3. Ask GPT-4.1 to *critique* the prompt](#step-3-ask-gpt-4-1-to-critique-the-prompt)
+        contains 'sk-gpt-4-1-to-critique-the-prompt' (buried inside 'ask-').
+        The negative lookbehind (?<![A-Za-z0-9]) in OPENAI_KEY_PATTERN prevents
+        this from being matched as an API key.
+        """
+        notebook = """{
+  "cells": [
+    {
+      "cell_type": "markdown",
+      "source": [
+        "# Prompt Migration Guide\\n",
+        "\\n",
+        "- [Step 3. Ask GPT-4.1 to *critique* the prompt](#step-3-ask-gpt-4-1-to-critique-the-prompt)\\n"
+      ]
+    }
+  ],
+  "metadata": {},
+  "nbformat": 4,
+  "nbformat_minor": 5
+}"""
+        from llmarmor.handlers.notebook import scan_notebook_file
+        findings = scan_notebook_file(str(tmp_path / "cookbook.ipynb"), notebook)
+        llm02 = [f for f in findings if f["rule_id"] == "LLM02"]
+        assert llm02 == [], (
+            "Markdown anchor slug 'ask-gpt-4-1-...' should not trigger LLM02; "
+            f"got: {llm02}"
+        )
+
+    def test_line_numbers_are_notebook_level_not_cell_level(self, tmp_path):
+        """Reported line numbers must reflect position in the full notebook, not within a cell.
+
+        Cell 0: 3-line markdown cell (lines 1-3 in notebook-level space)
+        Cell 1: code cell with a secret on its 2nd line (notebook-level line 5)
+        """
+        notebook = """{
+  "cells": [
+    {
+      "cell_type": "markdown",
+      "source": ["# Title\\n", "\\n", "Some description.\\n"]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "import openai\\n",
+        "client = openai.OpenAI(api_key='sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234')\\n"
+      ]
+    }
+  ],
+  "metadata": {},
+  "nbformat": 4,
+  "nbformat_minor": 5
+}"""
+        from llmarmor.handlers.notebook import scan_notebook_file
+        findings = scan_notebook_file(str(tmp_path / "multi_cell.ipynb"), notebook)
+        llm02 = [f for f in findings if f["rule_id"] == "LLM02"]
+        assert llm02, "Should detect API key in second code cell"
+        reported_line = llm02[0]["line"]
+        # Cell 0 has 3 lines; the secret is on line 2 of cell 1 → notebook line 3+2=5.
+        assert reported_line == 5, (
+            f"Expected notebook-level line 5 (cell 0 has 3 lines + secret at cell-line 2), "
+            f"got {reported_line}"
+        )
+
+    def test_markdown_cell_line_numbers_are_notebook_level(self, tmp_path):
+        """A secret in a markdown cell must use notebook-level line numbers.
+
+        Cell 0: 2-line code cell (lines 1-2)
+        Cell 1: markdown cell with a secret on its 1st line (notebook-level line 3)
+        """
+        notebook = """{
+  "cells": [
+    {
+      "cell_type": "code",
+      "source": ["import openai\\n", "print('hello')\\n"]
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "Key: sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234\\n",
+        "Some more text.\\n"
+      ]
+    }
+  ],
+  "metadata": {},
+  "nbformat": 4,
+  "nbformat_minor": 5
+}"""
+        from llmarmor.handlers.notebook import scan_notebook_file
+        findings = scan_notebook_file(str(tmp_path / "md_secret.ipynb"), notebook)
+        llm02 = [f for f in findings if f["rule_id"] == "LLM02"]
+        assert llm02, "Should detect API key in markdown cell"
+        reported_line = llm02[0]["line"]
+        # Cell 0 has 2 lines; secret is on line 1 of cell 1 → notebook line 2+1=3.
+        assert reported_line == 3, (
+            f"Expected notebook-level line 3 (cell 0 has 2 lines + secret at cell-line 1), "
+            f"got {reported_line}"
         )
 
 
