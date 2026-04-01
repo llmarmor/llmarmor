@@ -285,23 +285,19 @@ class _Analyzer(ast.NodeVisitor):
             if _is_system_prompt_var(name):
                 extracted = _concat_string(rhs)
                 if extracted is not None and len(extracted) > _MIN_SYSTEM_PROMPT_LEN:
-                    if self.strict:
-                        severity = "MEDIUM"
-                        description = (
-                            "System prompt is hardcoded in source code. "
-                            "If this code is published (open source, client-side bundle, "
-                            "shared package), the prompt contents will be visible to users. "
-                            "This may leak proprietary instructions, internal tool descriptions, "
-                            "or behavioral constraints that could be exploited. "
-                            "Move to environment variables or a secure config service."
-                        )
-                    else:
-                        severity = "INFO"
-                        description = (
-                            "System prompt is hardcoded in source code. "
-                            "Consider moving to environment variables or a config file "
-                            "for easier management and to prevent exposure in version control."
-                        )
+                    # Use a single consistent description regardless of mode so
+                    # that grouped output does not split the same rule into two
+                    # separate sections (one per description variant).  Only the
+                    # severity differs between normal (INFO) and strict (MEDIUM).
+                    severity = "MEDIUM" if self.strict else "INFO"
+                    description = (
+                        "System prompt is hardcoded in source code. "
+                        "If this code is published (open source, client-side bundle, "
+                        "shared package), the prompt contents will be visible to users. "
+                        "This may leak proprietary instructions, internal tool descriptions, "
+                        "or behavioral constraints that could be exploited. "
+                        "Move to environment variables or a secure config service."
+                    )
                     self.findings.append(
                         _finding(
                             _LLM07,

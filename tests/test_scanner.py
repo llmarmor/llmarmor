@@ -2307,3 +2307,192 @@ def handle(user_input):
         render(findings, fmt="grouped", console=console, scan_path=".", verbose=False)
         output = buf.getvalue()
         assert "LLM01" not in output, "INFO finding should be hidden in non-verbose output"
+
+
+# ---------------------------------------------------------------------------
+# Regression tests: Bug 1 — URL slug false positives in OPENAI_KEY_PATTERN
+# ---------------------------------------------------------------------------
+
+class TestOpenAIKeyPatternFalsePositives:
+    """OPENAI_KEY_PATTERN must not match URL slugs or pure lowercase-hyphen strings."""
+
+    # Strings that look like URL path segments containing 'sk-' but have no
+    # uppercase letters or digits — these must NOT be flagged.
+    URL_SLUG_CASES = [
+        # Direct URL path slug from openai-cookbook prompt-engineering.txt
+        "sk-the-model-to-adopt-a-persona",
+        "tactic-ask-the-model-to-adopt-a-persona",
+        "/docs/guides/prompt-engineering/tactic-ask-the-model-to-adopt-a-persona",
+        # Hyphenated English text with sk- substring
+        "sk-ask-the-model-to-respond-in-a-formal-tone",
+        "risk-assessment-of-the-model-behaviour-for-safety",
+    ]
+
+    # Real OpenAI key formats — these MUST be flagged.
+    REAL_KEY_CASES = [
+        "sk-proj-AbCdEf123456XYZmore1234567890",
+        "sk-AbCdEf123456789ABCDEFGHIJKLM",
+        "sk-svcacct-AbCdEf123XYZmore1234567890",
+        "sk-1234567890abcdefABCDEFGHIJKL",
+        "sk-proj-abc123ABC456def789GHIJKLmore",
+    ]
+
+    def test_url_slugs_not_matched(self):
+        """Pure lowercase+hyphen strings after 'sk-' must not match OPENAI_KEY_PATTERN."""
+        from llmarmor.secret_patterns import OPENAI_KEY_PATTERN
+
+        for slug in self.URL_SLUG_CASES:
+            m = OPENAI_KEY_PATTERN.search(slug)
+            assert m is None, (
+                f"URL slug {slug!r} should NOT match OPENAI_KEY_PATTERN but got: {m}"
+            )
+
+    def test_real_keys_still_matched(self):
+        """Real OpenAI keys (mixed case + digits) must still match OPENAI_KEY_PATTERN."""
+        from llmarmor.secret_patterns import OPENAI_KEY_PATTERN
+
+        for key in self.REAL_KEY_CASES:
+            m = OPENAI_KEY_PATTERN.search(key)
+            assert m is not None, (
+                f"Real key {key!r} should match OPENAI_KEY_PATTERN but got no match"
+            )
+
+    def test_url_slug_not_flagged_in_text_file(self, tmp_path):
+        """A text file line containing a URL slug with 'sk-' must not produce LLM02."""
+        from llmarmor.handlers.text_handler import scan_text_file
+
+        content = (
+            "- [Ask the model to adopt a persona]"
+            + "(/docs/guides/prompt-engineering/tactic-ask-the-model-to-adopt-a-persona)\n"
+        )
+        findings = scan_text_file(str(tmp_path / "prompt-engineering.txt"), content)
+        llm02 = [f for f in findings if f["rule_id"] == "LLM02"]
+        assert llm02 == [], (
+            f"URL slug should not produce LLM02 finding; got: {llm02}"
+        )
+
+    def test_url_slug_not_flagged_in_py_file(self, tmp_path):
+        """A Python file line containing a URL slug with 'sk-' must not produce LLM02."""
+        from llmarmor.rules.llm02_sensitive_info import check_sensitive_info
+
+        line = (
+            'url = "https://platform.openai.com/docs/guides/tactic-ask-the-model-to-adopt-a-persona"\n'
+        )
+        findings = check_sensitive_info(tmp_path / "safe.py", line)
+        llm02 = [f for f in findings if f["rule_id"] == "LLM02"]
+        assert llm02 == [], (
+            f"URL slug in Python file should not produce LLM02 finding; got: {llm02}"
+        )
+
+    def test_real_key_in_text_file_still_flagged(self, tmp_path):
+        """A real OpenAI key embedded in a text file must still produce LLM02."""
+        from llmarmor.handlers.text_handler import scan_text_file
+
+        content = "openai_key = sk-proj-AbCdEf123456XYZmore1234567890\n"
+        findings = scan_text_file(str(tmp_path / "config.txt"), content)
+        llm02 = [f for f in findings if f["rule_id"] == "LLM02"]
+        assert llm02, (
+            f"Real OpenAI key in text file should produce LLM02 finding; got: {findings}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Regression tests: Bug 2 — _group_findings does not split by description
+# ---------------------------------------------------------------------------
+
+class TestGroupFindingsConsistency:
+    """_group_findings must group by (rule_id, severity), not by description."""
+
+    def test_same_rule_and_severity_different_description_grouped_together(self):
+        """Two findings with the same rule_id+severity but different descriptions
+        must end up in a single group, not split into two."""
+        from llmarmor.formatters import _group_findings
+
+        findings = [
+            {
+                "rule_id": "LLM07",
+                "rule_name": "System Prompt Leakage",
+                "severity": "MEDIUM",
+                "description": "Description A (normal mode text).",
+                "fix_suggestion": "Move to env var.",
+                "filepath": "a.py",
+                "line": 10,
+            },
+            {
+                "rule_id": "LLM07",
+                "rule_name": "System Prompt Leakage",
+                "severity": "MEDIUM",
+                "description": "Description B (strict mode text, longer).",
+                "fix_suggestion": "Move to env var.",
+                "filepath": "b.py",
+                "line": 20,
+            },
+        ]
+        groups = _group_findings(findings)
+        assert len(groups) == 1, (
+            f"Same rule_id+severity should produce one group; got {len(groups)}: {groups}"
+        )
+        assert len(groups[0]["locations"]) == 2, (
+            f"Group should contain both locations; got: {groups[0]['locations']}"
+        )
+
+    def test_different_severities_produce_separate_groups(self):
+        """Findings with same rule_id but different severities must stay in separate groups."""
+        from llmarmor.formatters import _group_findings
+
+        findings = [
+            {
+                "rule_id": "LLM07",
+                "severity": "INFO",
+                "description": "Info finding.",
+                "fix_suggestion": "",
+                "filepath": "a.py",
+                "line": 1,
+            },
+            {
+                "rule_id": "LLM07",
+                "severity": "MEDIUM",
+                "description": "Medium finding.",
+                "fix_suggestion": "",
+                "filepath": "b.py",
+                "line": 2,
+            },
+        ]
+        groups = _group_findings(findings)
+        assert len(groups) == 2, (
+            f"Different severities should produce two groups; got {len(groups)}: {groups}"
+        )
+
+    def test_strict_mode_llm07_description_consistent(self, tmp_path):
+        """LLM07 findings from strict vs normal mode should share the same description."""
+        from llmarmor.ast_analysis import analyze
+
+        code = '''\
+SYSTEM_PROMPT = (
+    "You are a helpful AI assistant that helps users with their questions. "
+    "Always be polite and professional in your responses to users."
+)
+'''
+        py_file = tmp_path / "app.py"
+        py_file.write_text(code)
+
+        normal = analyze(str(py_file), code, strict=False)
+        strict = analyze(str(py_file), code, strict=True)
+
+        normal_llm07 = [f for f in normal["findings"] if f["rule_id"] == "LLM07"]
+        strict_llm07 = [f for f in strict["findings"] if f["rule_id"] == "LLM07"]
+
+        assert normal_llm07, "Expected LLM07 finding in normal mode"
+        assert strict_llm07, "Expected LLM07 finding in strict mode"
+
+        assert normal_llm07[0]["description"] == strict_llm07[0]["description"], (
+            "LLM07 description should be the same in normal and strict mode; "
+            f"normal={normal_llm07[0]['description']!r}, "
+            f"strict={strict_llm07[0]['description']!r}"
+        )
+        assert normal_llm07[0]["severity"] == "INFO", (
+            f"Normal mode should produce INFO; got: {normal_llm07[0]['severity']}"
+        )
+        assert strict_llm07[0]["severity"] == "MEDIUM", (
+            f"Strict mode should promote to MEDIUM; got: {strict_llm07[0]['severity']}"
+        )
