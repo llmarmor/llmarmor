@@ -6,13 +6,23 @@ from pathlib import Path
 from llmarmor import ast_analysis as _ast
 from llmarmor.rules import get_rules
 
-_SKIP_DIRS = {".git", "__pycache__", ".venv", "node_modules"}
+_SKIP_DIRS = {
+    ".git",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "node_modules",
+    ".tox",
+    "dist",
+    "build",
+    ".eggs",
+}
 
 
 def run_scan(path: str, strict: bool = False) -> list[dict]:
     """Scan a directory for LLM security vulnerabilities.
 
-    Walks *path* recursively, checks every ``.py`` file against all registered
+    Walks *path* recursively, checks every supported file against all registered
     rules and returns a list of finding dicts.  Each finding contains:
 
     - ``rule_id``      – OWASP LLM Top 10 rule identifier (e.g. "LLM01")
@@ -25,23 +35,30 @@ def run_scan(path: str, strict: bool = False) -> list[dict]:
 
     When *strict* is ``True``, additional borderline patterns are included
     (plain tainted variables in role messages, stricter system-prompt messaging).
+
+    In addition to ``.py`` files, the scanner also checks: ``.env``, ``.yaml``,
+    ``.yml``, ``.json``, ``.toml``, ``.js``, ``.ts``, ``.md``, ``.txt``, and
+    ``.ipynb`` files using type-specific handlers.
     """
     findings: list[dict] = []
     scan_path = Path(path)
 
-    for py_file in _iter_python_files(scan_path):
+    for file_path in _iter_files(scan_path):
         try:
-            content = py_file.read_text(encoding="utf-8")
+            content = file_path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, PermissionError):
             continue
 
-        _scan_file(py_file, content, findings, strict=strict)
+        if file_path.suffix == ".py":
+            _scan_file(file_path, content, findings, strict=strict)
+        else:
+            _scan_non_python_file(file_path, content, findings)
 
     return findings
 
 
 def _scan_file(py_file: Path, content: str, findings: list[dict], strict: bool = False) -> None:
-    """Run all checks on a single file and append results to *findings*."""
+    """Run all checks on a single Python file and append results to *findings*."""
     # AST analysis: additional findings + (line, rule_id) pairs to suppress.
     # A try/except here ensures that any unexpected error in the AST analysis
     # (beyond SyntaxError, which analyze() handles internally) never silences
@@ -76,8 +93,50 @@ def _scan_file(py_file: Path, content: str, findings: list[dict], strict: bool =
             findings.append(finding)
 
 
+def _scan_non_python_file(
+    file_path: Path, content: str, findings: list[dict]
+) -> None:
+    """Dispatch a non-Python file to the appropriate handler."""
+    from llmarmor.handlers import HANDLERS
+
+    # Try suffix first (e.g. ".yaml", ".js"), then fall back to the full name
+    # for dotfiles like ".env" whose pathlib suffix is empty.
+    handler = HANDLERS.get(file_path.suffix) or HANDLERS.get(file_path.name)
+    if handler is None:
+        return
+
+    seen: set[tuple[str, int, str]] = set()
+    for finding in handler(str(file_path), content):
+        key = (finding["filepath"], finding["line"], finding["rule_id"])
+        if key not in seen:
+            seen.add(key)
+            findings.append(finding)
+
+
+def _iter_files(root: Path):
+    """Yield all scannable files under *root*, skipping hidden and noise directories.
+
+    Supported extensions: ``.py``, ``.env``, ``.yaml``, ``.yml``, ``.json``,
+    ``.toml``, ``.js``, ``.ts``, ``.md``, ``.txt``, ``.ipynb``.
+    """
+    from llmarmor.handlers import HANDLERS
+
+    _SUPPORTED_SUFFIXES = frozenset({".py"} | HANDLERS.keys())
+
+    for item in root.iterdir():
+        if item.is_dir():
+            if item.name.startswith(".") or item.name in _SKIP_DIRS:
+                continue
+            yield from _iter_files(item)
+        elif item.suffix in _SUPPORTED_SUFFIXES or item.name in HANDLERS:
+            # item.name check handles dotfiles like ".env" whose pathlib suffix is ""
+            yield item
+
+
+# Keep the old name as an alias for backwards compatibility with any code that
+# references it directly (including existing tests).
 def _iter_python_files(root: Path):
-    """Yield ``.py`` files under *root*, skipping hidden dirs and known noise dirs."""
+    """Yield ``.py`` files under *root*.  Deprecated — use :func:`_iter_files`."""
     for item in root.iterdir():
         if item.is_dir():
             if item.name.startswith(".") or item.name in _SKIP_DIRS:

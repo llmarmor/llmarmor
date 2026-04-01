@@ -1370,7 +1370,7 @@ class TestFormatters:
     # ------------------------------------------------------------------
 
     def test_json_output_is_valid_json(self, capsys):
-        """json format must produce valid JSON."""
+        """json format must produce valid JSON with meta and findings blocks."""
         import json as _json
         from rich.console import Console
         from io import StringIO
@@ -1379,11 +1379,16 @@ class TestFormatters:
         format_json(self._SAMPLE_FINDINGS, console, "/some/path")
         captured = capsys.readouterr()
         parsed = _json.loads(captured.out)
-        assert isinstance(parsed, list), f"JSON output should be a list; got: {type(parsed)}"
-        assert len(parsed) == 3, f"Expected 3 findings in JSON; got: {len(parsed)}"
+        assert isinstance(parsed, dict), f"JSON output should be a dict; got: {type(parsed)}"
+        assert "meta" in parsed, "JSON output should have a 'meta' key"
+        assert "findings" in parsed, "JSON output should have a 'findings' key"
+        # 3 flat findings → 2 groups (LLM01 × 1 location, LLM10 × 2 locations)
+        assert len(parsed["findings"]) == 2, (
+            f"Expected 2 grouped findings in JSON; got: {len(parsed['findings'])}"
+        )
 
     def test_json_output_has_required_keys(self, capsys):
-        """Each JSON finding must have the standard keys."""
+        """Each grouped JSON finding must have the new required keys."""
         import json as _json
         from rich.console import Console
         from io import StringIO
@@ -1392,10 +1397,33 @@ class TestFormatters:
         format_json(self._SAMPLE_FINDINGS, console, "/some/path")
         captured = capsys.readouterr()
         parsed = _json.loads(captured.out)
-        required_keys = {"rule_id", "rule_name", "severity", "filepath", "line", "description", "fix_suggestion"}
-        for finding in parsed:
+        required_keys = {"rule_id", "rule_name", "severity", "description", "fix_suggestion", "locations"}
+        for finding in parsed["findings"]:
             missing = required_keys - finding.keys()
             assert not missing, f"JSON finding missing keys: {missing}"
+            assert isinstance(finding["locations"], list), "locations must be a list"
+            for loc in finding["locations"]:
+                assert "filepath" in loc and "line" in loc, f"Location missing keys: {loc}"
+
+    def test_json_output_meta_block(self, capsys):
+        """JSON output must contain a valid meta block with summary counts."""
+        import json as _json
+        from rich.console import Console
+        from io import StringIO
+        from llmarmor.formatters import format_json
+        console = Console(file=StringIO(), width=120)
+        format_json(self._SAMPLE_FINDINGS, console, "/my/project", mode="strict")
+        captured = capsys.readouterr()
+        parsed = _json.loads(captured.out)
+        meta = parsed["meta"]
+        assert meta["tool"] == "llmarmor"
+        assert meta["scanned_path"] == "/my/project"
+        assert meta["mode"] == "strict"
+        assert "timestamp" in meta
+        summary = meta["summary"]
+        assert summary["total"] == 3
+        assert summary["critical"] == 1
+        assert summary["medium"] == 2
 
     # ------------------------------------------------------------------
     # Markdown format
@@ -1522,8 +1550,43 @@ class TestFormatters:
         with pytest.raises(ValueError, match="Unknown format"):
             render(self._SAMPLE_FINDINGS, fmt="xls", console=console, scan_path="/p")
 
+    def test_render_verbose_false_default(self):
+        """render() verbose parameter defaults to False (INFO hidden)."""
+        from rich.console import Console
+        from io import StringIO
+        from llmarmor.formatters import render
+        console = Console(file=StringIO(), width=120)
+        info_finding = {
+            "rule_id": "LLM07", "rule_name": "System Prompt Leakage",
+            "severity": "INFO", "filepath": "a.py", "line": 1,
+            "description": "Some info.", "fix_suggestion": "",
+        }
+        render([info_finding], fmt="grouped", console=console, scan_path="/p")
+        assert "LLM07" not in console.file.getvalue(), (
+            "INFO finding should be hidden by default (verbose=False)"
+        )
 
-class TestPathTruncation:
+
+class TestBuildMode:
+    """Tests for the _build_mode helper in cli.py."""
+
+    def test_normal_mode(self):
+        from llmarmor.cli import _build_mode
+        assert _build_mode(strict=False, verbose=False) == "normal"
+
+    def test_strict_mode(self):
+        from llmarmor.cli import _build_mode
+        assert _build_mode(strict=True, verbose=False) == "strict"
+
+    def test_verbose_mode(self):
+        from llmarmor.cli import _build_mode
+        assert _build_mode(strict=False, verbose=True) == "verbose"
+
+    def test_strict_verbose_mode(self):
+        from llmarmor.cli import _build_mode
+        assert _build_mode(strict=True, verbose=True) == "strict+verbose"
+
+
     """Tests for the path truncation helper."""
 
     def test_short_path_not_truncated(self):
@@ -1554,3 +1617,488 @@ class TestPathTruncation:
         path = "/home/user/projects/my-very-long-project-name/src/deep/nested/module.py"
         result = truncate_path(path, max_width=40)
         assert result.endswith("module.py"), f"Filename must be preserved; got: {result!r}"
+
+
+# ---------------------------------------------------------------------------
+# Tests for verbose flag
+# ---------------------------------------------------------------------------
+
+
+class TestVerboseFlag:
+    """Tests for --verbose / -v flag behaviour."""
+
+    _INFO_FINDING = {
+        "rule_id": "LLM07",
+        "rule_name": "System Prompt Leakage",
+        "severity": "INFO",
+        "filepath": "app/chat.py",
+        "line": 10,
+        "description": "System prompt is hardcoded.",
+        "fix_suggestion": "Use env vars.",
+    }
+    _LOW_FINDING = {
+        "rule_id": "LLM01",
+        "rule_name": "Prompt Injection",
+        "severity": "LOW",
+        "filepath": "app/chat.py",
+        "line": 20,
+        "description": "Low risk finding.",
+        "fix_suggestion": "Sanitize inputs.",
+    }
+    _CRITICAL_FINDING = {
+        "rule_id": "LLM02",
+        "rule_name": "Sensitive Information Disclosure",
+        "severity": "CRITICAL",
+        "filepath": "app/chat.py",
+        "line": 30,
+        "description": "Hardcoded API key.",
+        "fix_suggestion": "Use env vars.",
+    }
+
+    def _make_console(self):
+        from io import StringIO
+        from rich.console import Console
+        return Console(file=StringIO(), width=120)
+
+    def test_verbose_false_hides_info_in_grouped(self):
+        """Without --verbose, INFO findings must not appear in grouped output."""
+        from llmarmor.formatters import render
+        console = self._make_console()
+        findings = [self._INFO_FINDING, self._CRITICAL_FINDING]
+        render(findings, fmt="grouped", console=console, scan_path="/p", verbose=False)
+        output = console.file.getvalue()
+        assert "LLM02" in output, "CRITICAL finding should be shown"
+        # INFO is filtered — the LLM07 rule section should not appear
+        assert "LLM07" not in output, "INFO finding should be hidden in non-verbose mode"
+
+    def test_verbose_true_shows_info_in_grouped(self):
+        """With --verbose, INFO findings must appear in grouped output."""
+        from llmarmor.formatters import render
+        console = self._make_console()
+        findings = [self._INFO_FINDING, self._CRITICAL_FINDING]
+        render(findings, fmt="grouped", console=console, scan_path="/p", verbose=True)
+        output = console.file.getvalue()
+        assert "LLM07" in output, "INFO finding should be shown in verbose mode"
+        assert "LLM02" in output, "CRITICAL finding should still be shown"
+
+    def test_verbose_false_hides_low_in_grouped(self):
+        """Without --verbose, LOW findings must not appear in grouped output."""
+        from llmarmor.formatters import render
+        console = self._make_console()
+        render(
+            [self._LOW_FINDING, self._CRITICAL_FINDING],
+            fmt="grouped",
+            console=console,
+            scan_path="/p",
+            verbose=False,
+        )
+        output = console.file.getvalue()
+        # LLM01 appears only as LOW; CRITICAL is LLM02
+        assert "LLM02" in output
+        # LOW finding rule section should not appear (its only finding is LOW severity)
+        assert "LLM01" not in output, "LOW finding (LLM01) should be hidden in non-verbose mode"
+
+    def test_verbose_true_shows_low_in_grouped(self):
+        """With --verbose, LOW findings must appear in grouped output."""
+        from llmarmor.formatters import render
+        console = self._make_console()
+        render(
+            [self._LOW_FINDING, self._CRITICAL_FINDING],
+            fmt="grouped",
+            console=console,
+            scan_path="/p",
+            verbose=True,
+        )
+        output = console.file.getvalue()
+        assert "LLM01" in output, "LOW finding (LLM01) should be shown in verbose mode"
+
+    def test_verbose_false_hides_info_in_json(self, capsys):
+        """Without --verbose, INFO findings must not appear in JSON output."""
+        import json as _json
+        from rich.console import Console
+        from io import StringIO
+        from llmarmor.formatters import render
+        console = Console(file=StringIO(), width=120)
+        render(
+            [self._INFO_FINDING, self._CRITICAL_FINDING],
+            fmt="json",
+            console=console,
+            scan_path="/p",
+            verbose=False,
+        )
+        parsed = _json.loads(capsys.readouterr().out)
+        severities = {g["severity"] for g in parsed["findings"]}
+        assert "INFO" not in severities, "INFO should be filtered from JSON in non-verbose mode"
+        assert "CRITICAL" in severities, "CRITICAL should remain in JSON"
+
+    def test_verbose_true_shows_info_in_json(self, capsys):
+        """With --verbose, INFO findings must appear in JSON output."""
+        import json as _json
+        from rich.console import Console
+        from io import StringIO
+        from llmarmor.formatters import render
+        console = Console(file=StringIO(), width=120)
+        render(
+            [self._INFO_FINDING, self._CRITICAL_FINDING],
+            fmt="json",
+            console=console,
+            scan_path="/p",
+            verbose=True,
+        )
+        parsed = _json.loads(capsys.readouterr().out)
+        severities = {g["severity"] for g in parsed["findings"]}
+        assert "INFO" in severities, "INFO should appear in JSON in verbose mode"
+
+
+# ---------------------------------------------------------------------------
+# Tests for the rule registry
+# ---------------------------------------------------------------------------
+
+
+class TestRegistry:
+    """Tests for the rule registry (registry.py)."""
+
+    def test_get_known_rule(self):
+        """registry.get() must return the correct RuleDefinition."""
+        from llmarmor.registry import registry
+        rule = registry.get("LLM01")
+        assert rule.rule_id == "LLM01"
+        assert rule.name == "Prompt Injection"
+
+    def test_get_unknown_rule_raises(self):
+        """registry.get() must raise KeyError for an unknown rule."""
+        from llmarmor.registry import registry
+        with pytest.raises(KeyError):
+            registry.get("LLM99")
+
+    def test_active_rules_returns_only_active(self):
+        """active_rules() must only return ACTIVE rules."""
+        from llmarmor.registry import registry, Status
+        active = registry.active_rules()
+        assert len(active) == 4, f"Expected 4 active rules; got {len(active)}"
+        for r in active:
+            assert r.status == Status.ACTIVE, f"{r.rule_id} should be ACTIVE"
+
+    def test_active_rule_ids(self):
+        """active_rules() must include LLM01, LLM02, LLM07, LLM10."""
+        from llmarmor.registry import registry
+        ids = {r.rule_id for r in registry.active_rules()}
+        assert ids == {"LLM01", "LLM02", "LLM07", "LLM10"}
+
+    def test_all_rules_count(self):
+        """all_rules() must return all 10 OWASP LLM rules."""
+        from llmarmor.registry import registry
+        assert len(registry.all_rules()) == 10
+
+    def test_by_status_planned(self):
+        """by_status(PLANNED) must return exactly LLM05 and LLM08."""
+        from llmarmor.registry import registry, Status
+        planned = {r.rule_id for r in registry.by_status(Status.PLANNED)}
+        assert planned == {"LLM05", "LLM08"}
+
+    def test_by_status_out_of_scope(self):
+        """by_status(OUT_OF_SCOPE) must return LLM03, LLM04, LLM06, LLM09."""
+        from llmarmor.registry import registry, Status
+        oos = {r.rule_id for r in registry.by_status(Status.OUT_OF_SCOPE)}
+        assert oos == {"LLM03", "LLM04", "LLM06", "LLM09"}
+
+    def test_rule_has_required_fields(self):
+        """Every registered rule must have non-empty rule_id, name, description, fix."""
+        from llmarmor.registry import registry
+        for rule in registry.all_rules():
+            assert rule.rule_id, f"rule_id empty for {rule}"
+            assert rule.name, f"name empty for {rule.rule_id}"
+            assert rule.description, f"description empty for {rule.rule_id}"
+            assert rule.fix_suggestion, f"fix_suggestion empty for {rule.rule_id}"
+
+
+# ---------------------------------------------------------------------------
+# Tests for non-Python file handlers
+# ---------------------------------------------------------------------------
+
+
+class TestEnvHandler:
+    """Tests for the .env file handler."""
+
+    def test_detects_openai_key(self, tmp_path):
+        from llmarmor.handlers.env import scan_env_file
+        content = 'OPENAI_API_KEY=sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234\n'
+        findings = scan_env_file(str(tmp_path / ".env"), content)
+        assert len(findings) == 1
+        assert findings[0]["rule_id"] == "LLM02"
+        assert findings[0]["severity"] == "CRITICAL"
+
+    def test_detects_anthropic_key(self, tmp_path):
+        from llmarmor.handlers.env import scan_env_file
+        content = 'ANTHROPIC_KEY=sk-ant-api03-abc123def456ghi789jkl012mno345pqr678stu\n'
+        findings = scan_env_file(str(tmp_path / ".env"), content)
+        assert len(findings) == 1
+        assert findings[0]["rule_id"] == "LLM02"
+
+    def test_skips_comments(self, tmp_path):
+        from llmarmor.handlers.env import scan_env_file
+        content = '# OPENAI_API_KEY=sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234\n'
+        findings = scan_env_file(str(tmp_path / ".env"), content)
+        assert findings == [], "Comment lines should not be flagged"
+
+    def test_skips_empty_lines(self, tmp_path):
+        from llmarmor.handlers.env import scan_env_file
+        content = '\n\n   \n'
+        findings = scan_env_file(str(tmp_path / ".env"), content)
+        assert findings == []
+
+    def test_no_finding_for_clean_file(self, tmp_path):
+        from llmarmor.handlers.env import scan_env_file
+        content = 'DATABASE_URL=postgres://localhost/mydb\nDEBUG=true\n'
+        findings = scan_env_file(str(tmp_path / ".env"), content)
+        assert findings == []
+
+    def test_skips_test_placeholder(self, tmp_path):
+        from llmarmor.handlers.env import scan_env_file
+        content = 'TEST_OPENAI_KEY=sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234\n'
+        findings = scan_env_file(str(tmp_path / ".env"), content)
+        assert findings == [], "Test/placeholder keys should not be flagged"
+
+
+class TestYamlHandler:
+    """Tests for the .yaml/.yml file handler."""
+
+    def test_detects_secret_in_value(self, tmp_path):
+        from llmarmor.handlers.yaml_handler import scan_yaml_file
+        content = 'openai_key: sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234\n'
+        findings = scan_yaml_file(str(tmp_path / "config.yaml"), content)
+        llm02 = [f for f in findings if f["rule_id"] == "LLM02"]
+        assert llm02, "Should detect OpenAI key in YAML value"
+
+    def test_detects_system_prompt(self, tmp_path):
+        from llmarmor.handlers.yaml_handler import scan_yaml_file
+        long_prompt = "You are a helpful assistant. " * 10
+        content = f"system_prompt: {long_prompt}\n"
+        findings = scan_yaml_file(str(tmp_path / "config.yaml"), content)
+        llm07 = [f for f in findings if f["rule_id"] == "LLM07"]
+        assert llm07, "Should detect long system prompt in YAML"
+
+    def test_skips_comments(self, tmp_path):
+        from llmarmor.handlers.yaml_handler import scan_yaml_file
+        content = '# openai_key: sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234\n'
+        findings = scan_yaml_file(str(tmp_path / "config.yaml"), content)
+        assert findings == []
+
+    def test_short_prompt_not_flagged(self, tmp_path):
+        from llmarmor.handlers.yaml_handler import scan_yaml_file
+        content = "system_prompt: You are helpful.\n"
+        findings = scan_yaml_file(str(tmp_path / "config.yaml"), content)
+        llm07 = [f for f in findings if f["rule_id"] == "LLM07"]
+        assert llm07 == [], "Short prompts should not be flagged"
+
+
+class TestJsonHandler:
+    """Tests for the .json file handler."""
+
+    def test_detects_secret_in_value(self, tmp_path):
+        from llmarmor.handlers.json_handler import scan_json_file
+        content = '{"openai_key": "sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234"}\n'
+        findings = scan_json_file(str(tmp_path / "config.json"), content)
+        llm02 = [f for f in findings if f["rule_id"] == "LLM02"]
+        assert llm02, "Should detect OpenAI key in JSON value"
+
+    def test_detects_system_prompt(self, tmp_path):
+        from llmarmor.handlers.json_handler import scan_json_file
+        long_prompt = "You are a helpful assistant. " * 5
+        content = f'{{"system_prompt": "{long_prompt}"}}\n'
+        findings = scan_json_file(str(tmp_path / "config.json"), content)
+        llm07 = [f for f in findings if f["rule_id"] == "LLM07"]
+        assert llm07, "Should detect long system prompt in JSON"
+
+    def test_no_finding_for_clean_file(self, tmp_path):
+        from llmarmor.handlers.json_handler import scan_json_file
+        content = '{"name": "my-app", "version": "1.0.0"}\n'
+        findings = scan_json_file(str(tmp_path / "config.json"), content)
+        assert findings == []
+
+
+class TestTomlHandler:
+    """Tests for the .toml file handler."""
+
+    def test_detects_secret_in_value(self, tmp_path):
+        from llmarmor.handlers.toml_handler import scan_toml_file
+        content = 'openai_key = "sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234"\n'
+        findings = scan_toml_file(str(tmp_path / "config.toml"), content)
+        assert findings, "Should detect OpenAI key in TOML value"
+        assert findings[0]["rule_id"] == "LLM02"
+
+    def test_skips_comments(self, tmp_path):
+        from llmarmor.handlers.toml_handler import scan_toml_file
+        content = '# openai_key = "sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234"\n'
+        findings = scan_toml_file(str(tmp_path / "config.toml"), content)
+        assert findings == []
+
+    def test_no_finding_for_clean_file(self, tmp_path):
+        from llmarmor.handlers.toml_handler import scan_toml_file
+        content = '[project]\nname = "my-app"\nversion = "1.0.0"\n'
+        findings = scan_toml_file(str(tmp_path / "pyproject.toml"), content)
+        assert findings == []
+
+
+class TestJsHandler:
+    """Tests for the .js/.ts file handler."""
+
+    def test_detects_secret_in_js(self, tmp_path):
+        from llmarmor.handlers.js_handler import scan_js_file
+        content = 'const apiKey = "sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234";\n'
+        findings = scan_js_file(str(tmp_path / "app.js"), content)
+        llm02 = [f for f in findings if f["rule_id"] == "LLM02"]
+        assert llm02, "Should detect OpenAI key in JS file"
+
+    def test_detects_system_prompt_in_ts(self, tmp_path):
+        from llmarmor.handlers.js_handler import scan_js_file
+        long_prompt = "You are a helpful customer service agent for Acme Corp. " * 3
+        content = f'const systemPrompt = "{long_prompt}";\n'
+        findings = scan_js_file(str(tmp_path / "chat.ts"), content)
+        llm07 = [f for f in findings if f["rule_id"] == "LLM07"]
+        assert llm07, "Should detect long system prompt in TS file"
+
+    def test_skips_line_comments(self, tmp_path):
+        from llmarmor.handlers.js_handler import scan_js_file
+        content = '// const apiKey = "sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234";\n'
+        findings = scan_js_file(str(tmp_path / "app.js"), content)
+        assert findings == []
+
+
+class TestTextHandler:
+    """Tests for the .md/.txt file handler."""
+
+    def test_detects_secret_in_markdown(self, tmp_path):
+        from llmarmor.handlers.text_handler import scan_text_file
+        content = 'Use this key: sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234\n'
+        findings = scan_text_file(str(tmp_path / "docs.md"), content)
+        llm02 = [f for f in findings if f["rule_id"] == "LLM02"]
+        assert llm02, "Should detect API key in markdown"
+        assert llm02[0]["severity"] == "HIGH"
+
+    def test_detects_system_prompt_in_text(self, tmp_path):
+        from llmarmor.handlers.text_handler import scan_text_file
+        content = (
+            "System prompt: You are a helpful customer service agent for Acme Corp. "
+            "You have access to customer databases and can process refunds. "
+            "Never reveal internal pricing.\n"
+        )
+        findings = scan_text_file(str(tmp_path / "notes.txt"), content)
+        llm07 = [f for f in findings if f["rule_id"] == "LLM07"]
+        assert llm07, "Should detect system prompt in text file"
+
+    def test_no_finding_for_clean_file(self, tmp_path):
+        from llmarmor.handlers.text_handler import scan_text_file
+        content = "# My Project\n\nThis is a clean documentation file.\n"
+        findings = scan_text_file(str(tmp_path / "README.md"), content)
+        assert findings == []
+
+
+class TestNotebookHandler:
+    """Tests for the .ipynb Jupyter notebook handler."""
+
+    _NOTEBOOK_WITH_SECRET = """{
+  "cells": [
+    {
+      "cell_type": "code",
+      "source": ["import openai\\n", "client = openai.OpenAI(api_key='sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234')\\n"]
+    }
+  ],
+  "metadata": {},
+  "nbformat": 4,
+  "nbformat_minor": 5
+}"""
+
+    _NOTEBOOK_WITH_PROMPT_INJECTION = """{
+  "cells": [
+    {
+      "cell_type": "code",
+      "source": ["user_input = input('query')\\n", "messages = [{'role': 'system', 'content': f'Help: {user_input}'}]\\n"]
+    }
+  ],
+  "metadata": {},
+  "nbformat": 4,
+  "nbformat_minor": 5
+}"""
+
+    _CLEAN_NOTEBOOK = """{
+  "cells": [
+    {
+      "cell_type": "code",
+      "source": ["print('hello world')\\n"]
+    }
+  ],
+  "metadata": {},
+  "nbformat": 4,
+  "nbformat_minor": 5
+}"""
+
+    def test_detects_secret_in_code_cell(self, tmp_path):
+        from llmarmor.handlers.notebook import scan_notebook_file
+        findings = scan_notebook_file(str(tmp_path / "analysis.ipynb"), self._NOTEBOOK_WITH_SECRET)
+        llm02 = [f for f in findings if f["rule_id"] == "LLM02"]
+        assert llm02, "Should detect API key in notebook code cell"
+
+    def test_no_finding_for_clean_notebook(self, tmp_path):
+        from llmarmor.handlers.notebook import scan_notebook_file
+        findings = scan_notebook_file(str(tmp_path / "clean.ipynb"), self._CLEAN_NOTEBOOK)
+        assert findings == [], f"Clean notebook should produce no findings; got: {findings}"
+
+    def test_invalid_json_returns_empty(self, tmp_path):
+        from llmarmor.handlers.notebook import scan_notebook_file
+        findings = scan_notebook_file(str(tmp_path / "broken.ipynb"), "not json at all")
+        assert findings == []
+
+
+class TestScannerNonPythonIntegration:
+    """Integration tests: scanner picks up non-Python files."""
+
+    def test_scan_detects_secret_in_env_file(self, tmp_path):
+        """run_scan must detect LLM02 in a .env file."""
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            'OPENAI_API_KEY=sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234\n'
+        )
+        findings = run_scan(str(tmp_path))
+        llm02 = [f for f in findings if f["rule_id"] == "LLM02"]
+        assert llm02, "Scanner should detect LLM02 in .env file"
+
+    def test_scan_detects_secret_in_yaml_file(self, tmp_path):
+        """run_scan must detect LLM02 in a .yaml file."""
+        yaml_file = tmp_path / "config.yaml"
+        yaml_file.write_text(
+            'openai_key: sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234\n'
+        )
+        findings = run_scan(str(tmp_path))
+        llm02 = [f for f in findings if f["rule_id"] == "LLM02"]
+        assert llm02, "Scanner should detect LLM02 in .yaml file"
+
+    def test_scan_detects_secret_in_toml_file(self, tmp_path):
+        """run_scan must detect LLM02 in a .toml file."""
+        toml_file = tmp_path / "config.toml"
+        toml_file.write_text(
+            'openai_key = "sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234"\n'
+        )
+        findings = run_scan(str(tmp_path))
+        llm02 = [f for f in findings if f["rule_id"] == "LLM02"]
+        assert llm02, "Scanner should detect LLM02 in .toml file"
+
+    def test_scan_detects_secret_in_js_file(self, tmp_path):
+        """run_scan must detect LLM02 in a .js file."""
+        js_file = tmp_path / "app.js"
+        js_file.write_text(
+            'const key = "sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234";\n'
+        )
+        findings = run_scan(str(tmp_path))
+        llm02 = [f for f in findings if f["rule_id"] == "LLM02"]
+        assert llm02, "Scanner should detect LLM02 in .js file"
+
+    def test_scan_still_detects_python_findings(self, tmp_path):
+        """run_scan must still detect Python findings alongside non-Python files."""
+        py_file = tmp_path / "app.py"
+        py_file.write_text(
+            'OPENAI_API_KEY = "sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234"\n'
+        )
+        findings = run_scan(str(tmp_path))
+        llm02 = [f for f in findings if f["rule_id"] == "LLM02"]
+        assert llm02, "Scanner should still detect LLM02 in .py files"
