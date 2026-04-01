@@ -368,31 +368,52 @@ class _Analyzer(ast.NodeVisitor):
                         # Suppress the regex LLM01 finding at this line (same issue).
                         self.cleared.add((node.lineno, _LLM01))
 
-                    elif (
-                        self.strict
-                        and isinstance(content_node, ast.Name)
-                        and self._is_tainted_node(content_node)
+                    elif isinstance(content_node, ast.Name) and self._is_tainted_node(
+                        content_node
                     ):
-                        # Strict mode: plain tainted variable as system/assistant content.
-                        # The user controls the entire message content — flag as MEDIUM.
-                        self.findings.append(
-                            _finding(
-                                _LLM01,
-                                "Prompt Injection",
-                                "MEDIUM",
-                                self.filepath,
-                                node.lineno,
-                                (
-                                    f"Tainted variable passed directly as {role} message content. "
-                                    "If the variable contains unsanitized user input, the user "
-                                    "controls the entire system instruction."
-                                ),
-                                (
-                                    "Validate and sanitize the variable before using it as "
-                                    "system message content, or use a fixed system prompt."
-                                ),
+                        if self.strict:
+                            # Strict mode: plain tainted variable as system/assistant content.
+                            # The user controls the entire message content — flag as MEDIUM.
+                            self.findings.append(
+                                _finding(
+                                    _LLM01,
+                                    "Prompt Injection",
+                                    "MEDIUM",
+                                    self.filepath,
+                                    node.lineno,
+                                    (
+                                        f"Tainted variable passed directly as {role} message content. "
+                                        "If the variable contains unsanitized user input, the user "
+                                        "controls the entire system instruction."
+                                    ),
+                                    (
+                                        "Validate and sanitize the variable before using it as "
+                                        "system message content, or use a fixed system prompt."
+                                    ),
+                                )
                             )
-                        )
+                        else:
+                            # Normal mode: plain variable assignment is not string interpolation,
+                            # so no injection vector exists.  Emit INFO so --verbose can show it
+                            # and --strict can promote it.
+                            self.findings.append(
+                                _finding(
+                                    _LLM01,
+                                    "Prompt Injection",
+                                    "INFO",
+                                    self.filepath,
+                                    node.lineno,
+                                    (
+                                        f"Tainted variable passed directly as {role} message content "
+                                        "(plain assignment, not interpolated). Consider validating "
+                                        "or sanitizing the value before use."
+                                    ),
+                                    (
+                                        "Validate and sanitize the variable before using it as "
+                                        "system message content, or use a fixed system prompt."
+                                    ),
+                                )
+                            )
 
                 elif role == "user" and content_node is not None:
                     if isinstance(content_node, ast.Name) and self._is_tainted_node(
@@ -418,11 +439,28 @@ class _Analyzer(ast.NodeVisitor):
                                 )
                             )
                         else:
-                            # Safe pattern (normal mode): user input as standalone value in a
-                            # user-role message.  Only suppress the regex false positive when
-                            # content is a bare name (no f-string wrapping).  An f-string in a
-                            # user-role message may still be flagged by the regex rule.
+                            # Normal mode: plain user-role assignment is safe (no injection
+                            # vector), but emit INFO so --verbose can surface it.
+                            # Suppress any regex false-positive for this line.
                             self.cleared.add((node.lineno, _LLM01))
+                            self.findings.append(
+                                _finding(
+                                    _LLM01,
+                                    "Prompt Injection",
+                                    "INFO",
+                                    self.filepath,
+                                    node.lineno,
+                                    (
+                                        "User input is passed directly as user role content "
+                                        "(plain assignment, not interpolated). Consider applying "
+                                        "input validation and length limits."
+                                    ),
+                                    (
+                                        "Validate user input before passing it to the LLM. "
+                                        "Apply length limits and content filtering."
+                                    ),
+                                )
+                            )
 
 
         self.generic_visit(node)

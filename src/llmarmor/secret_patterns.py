@@ -32,3 +32,11 @@ TEST_VAR_PATTERN = re.compile(
     r"(?<![A-Za-z0-9])(?:test|fake|mock|example|dummy|placeholder)(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
+
+# Values that look like placeholder/documentation secrets rather than real keys.
+# Applied to the *matched value* (the token matched by a SECRET_PATTERN), not the
+# variable name.  If a match is found, the finding is suppressed.
+PLACEHOLDER_VALUE_PATTERN = re.compile(
+    r"(?:your|example|test|fake|mock|dummy|placeholder|replace|insert|put|change|fill|xxx|sample|demo|here)",
+    re.IGNORECASE,
+)
