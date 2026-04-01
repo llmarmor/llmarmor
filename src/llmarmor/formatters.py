@@ -3,7 +3,7 @@
 Supported formats:
 - ``grouped`` (default): findings grouped by rule, one section per rule
 - ``flat``: one line per finding (legacy format)
-- ``json``: JSON array of all findings
+- ``json``: grouped JSON with ``meta`` and ``findings`` blocks
 - ``md`` / ``markdown``: Markdown report
 """
 
@@ -11,11 +11,13 @@ import json
 import os
 import shutil
 from collections import defaultdict
-from datetime import date
+from datetime import datetime, timezone
 from typing import Sequence
 
 from rich.console import Console
 from rich.table import Table
+
+from llmarmor import __version__
 
 # ---------------------------------------------------------------------------
 # Path truncation helper
@@ -204,19 +206,76 @@ def format_flat(findings: Sequence[dict], console: Console, scan_path: str) -> N
 # JSON format
 # ---------------------------------------------------------------------------
 
-def format_json(findings: Sequence[dict], console: Console, scan_path: str) -> None:
-    """Print findings as a pretty-printed JSON array to stdout."""
+def _build_summary(findings: Sequence[dict]) -> dict:
+    """Return a severity-count summary dict for *findings*."""
+    counts: dict[str, int] = {s.lower(): 0 for s in _SEVERITY_ORDER}
+    for f in findings:
+        key = f["severity"].lower()
+        counts[key] = counts.get(key, 0) + 1
+    counts["total"] = len(findings)
+    return counts
+
+
+def _group_findings(findings: Sequence[dict]) -> list[dict]:
+    """Group flat findings by (rule_id, severity, description) → locations list."""
+    groups: dict[tuple, dict] = {}
+    for f in findings:
+        key = (f["rule_id"], f["severity"], f.get("description", ""))
+        if key not in groups:
+            groups[key] = {
+                "rule_id": f["rule_id"],
+                "rule_name": f.get("rule_name") or _RULE_NAMES.get(f["rule_id"], f["rule_id"]),
+                "severity": f["severity"],
+                "description": f.get("description", ""),
+                "fix_suggestion": f.get("fix_suggestion", ""),
+                "locations": [],
+            }
+        groups[key]["locations"].append(
+            {"filepath": f.get("filepath", ""), "line": f.get("line", 0)}
+        )
+
+    # Sort groups by severity then rule_id.
+    return sorted(
+        groups.values(),
+        key=lambda g: (_severity_sort_key(g["severity"]), g["rule_id"]),
+    )
+
+
+def format_json(
+    findings: Sequence[dict],
+    console: Console,
+    scan_path: str,
+    mode: str = "normal",
+) -> None:
+    """Print findings as a grouped JSON object with a ``meta`` block to stdout."""
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    output = {
+        "meta": {
+            "tool": "llmarmor",
+            "version": __version__,
+            "scanned_path": scan_path,
+            "timestamp": timestamp,
+            "mode": mode,
+            "summary": _build_summary(findings),
+        },
+        "findings": _group_findings(findings),
+    }
     # Use print() directly so the output is clean JSON without Rich markup.
-    print(json.dumps(list(findings), indent=2))
+    print(json.dumps(output, indent=2))
 
 
 # ---------------------------------------------------------------------------
 # Markdown format
 # ---------------------------------------------------------------------------
 
-def format_markdown(findings: Sequence[dict], console: Console, scan_path: str) -> None:
+def format_markdown(
+    findings: Sequence[dict],
+    console: Console,
+    scan_path: str,
+    mode: str = "normal",
+) -> None:
     """Print a structured Markdown report to stdout."""
-    today = date.today().isoformat()
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     sev_counts: dict[str, int] = {}
     for f in findings:
@@ -230,40 +289,30 @@ def format_markdown(findings: Sequence[dict], console: Console, scan_path: str) 
         "",
         f"**Scanned**: {scan_path}",
         f"**Date**: {today}",
+        f"**Mode**: {mode}",
         f"**Findings**: {findings_summary}",
         "",
     ]
 
-    # Group by rule
-    by_rule: dict[str, list[dict]] = defaultdict(list)
-    for f in findings:
-        by_rule[f["rule_id"]].append(f)
+    for group in _group_findings(findings):
+        rule_id = group["rule_id"]
+        rule_name = group["rule_name"]
+        severity = group["severity"]
 
-    def _group_severity(rule_id: str) -> int:
-        group = by_rule[rule_id]
-        return min(_severity_sort_key(f["severity"]) for f in group)
-
-    sorted_rules = sorted(by_rule.keys(), key=_group_severity)
-
-    for rule_id in sorted_rules:
-        group = by_rule[rule_id]
-        worst_sev = min(group, key=lambda f: _severity_sort_key(f["severity"]))["severity"]
-        rule_name = group[0].get("rule_name") or _RULE_NAMES.get(rule_id, rule_id)
-
-        lines.append(f"## {rule_id}: {rule_name} ({worst_sev})")
+        lines.append(f"## {rule_id}: {rule_name} ({severity})")
         lines.append("")
 
-        description = group[0].get("description", "")
+        description = group.get("description", "")
         if description:
             lines.append(description)
             lines.append("")
 
         lines.append("| File | Line |")
         lines.append("|------|------|")
-        for f in sorted(group, key=lambda x: (x["filepath"], x["line"])):
-            lines.append(f"| {f['filepath']} | {f['line']} |")
+        for loc in sorted(group["locations"], key=lambda x: (x["filepath"], x["line"])):
+            lines.append(f"| {loc['filepath']} | {loc['line']} |")
 
-        fix = next((f.get("fix_suggestion") for f in group if f.get("fix_suggestion")), None)
+        fix = group.get("fix_suggestion", "")
         if fix:
             lines.append("")
             lines.append(f"**Fix**: {fix}")
@@ -289,22 +338,40 @@ _FORMATS = {
 
 VALID_FORMATS = list(_FORMATS.keys())
 
+# Severities hidden in non-verbose mode.
+_HIDDEN_IN_NORMAL = frozenset({"INFO", "LOW"})
+
 
 def render(
     findings: Sequence[dict],
     fmt: str,
     console: Console,
     scan_path: str,
+    verbose: bool = False,
+    mode: str = "normal",
 ) -> None:
     """Render *findings* using the specified *fmt* format.
 
-    :param findings: list of finding dicts
+    :param findings: list of finding dicts from :func:`~llmarmor.scanner.run_scan`
     :param fmt: one of ``grouped``, ``flat``, ``json``, ``md``, ``markdown``
     :param console: Rich Console instance (used for terminal formats)
     :param scan_path: the path that was scanned (shown in headers)
+    :param verbose: when ``True``, include INFO and LOW findings in output.
+                    When ``False`` (default), INFO and LOW are hidden.
+    :param mode: scan mode string for JSON/Markdown metadata
+                 (``"normal"``, ``"strict"``, ``"verbose"``, ``"strict+verbose"``)
     :raises ValueError: if *fmt* is not recognised
     """
     formatter = _FORMATS.get(fmt)
     if formatter is None:
         raise ValueError(f"Unknown format {fmt!r}. Valid options: {', '.join(VALID_FORMATS)}")
-    formatter(findings, console, scan_path)
+
+    # Filter out INFO and LOW in non-verbose mode.
+    if not verbose:
+        findings = [f for f in findings if f["severity"] not in _HIDDEN_IN_NORMAL]
+
+    # JSON and Markdown formatters accept an extra ``mode`` kwarg.
+    if fmt in ("json", "md", "markdown"):
+        formatter(findings, console, scan_path, mode=mode)  # type: ignore[call-arg]
+    else:
+        formatter(findings, console, scan_path)

@@ -1,36 +1,13 @@
 """LLM02: Sensitive Information Disclosure — hardcoded API key detection."""
 
-import re
+from llmarmor.secret_patterns import SECRET_PATTERNS, TEST_VAR_PATTERN
 
 RULE_ID = "LLM02"
 RULE_NAME = "Sensitive Information Disclosure"
 SEVERITY = "CRITICAL"
 
-# OpenAI keys: sk- followed by 20+ alphanumeric chars, but NOT sk-ant- (Anthropic)
-OPENAI_KEY_PATTERN = re.compile(r'sk-(?!ant-)(?:[A-Za-z0-9_-]{20,})')
-
-# Anthropic keys: sk-ant- followed by 20+ chars
-ANTHROPIC_KEY_PATTERN = re.compile(r'sk-ant-[A-Za-z0-9_-]{20,}')
-
-# Google AI keys: AIza followed by exactly 35 chars
-GOOGLE_KEY_PATTERN = re.compile(r'AIza[A-Za-z0-9_-]{35}')
-
-# Hugging Face tokens: hf_ followed by 20+ alphanumeric chars
-HF_TOKEN_PATTERN = re.compile(r'hf_[A-Za-z0-9]{20,}')
-
-_PATTERNS = [
-    (OPENAI_KEY_PATTERN, "OpenAI API key"),
-    (ANTHROPIC_KEY_PATTERN, "Anthropic API key"),
-    (GOOGLE_KEY_PATTERN, "Google AI API key"),
-    (HF_TOKEN_PATTERN, "Hugging Face API token"),
-]
-
-# Variables whose names indicate they are placeholders and not real secrets.
-# Use custom word-boundary lookaround so _-separated words like test_key are matched.
-_TEST_VAR_PATTERN = re.compile(
-    r'(?<![A-Za-z0-9])(?:test|fake|mock|example|dummy|placeholder)(?![A-Za-z0-9])',
-    re.IGNORECASE,
-)
+_PATTERNS = SECRET_PATTERNS
+_TEST_VAR_PATTERN = TEST_VAR_PATTERN
 
 FIX_SUGGESTION = (
     "Never hardcode API keys in source code. Store secrets in environment variables "
