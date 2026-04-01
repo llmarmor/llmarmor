@@ -338,7 +338,12 @@ with appropriate detection logic:
 | TOML | `.toml` | LLM02 | Regex-based |
 | JavaScript | `.js`, `.ts` | LLM02, LLM07 | Detects secrets and system prompt literals |
 | Docs/Notes | `.md`, `.txt` | LLM02, LLM07 | Catches accidentally committed secrets |
-| Notebooks | `.ipynb` | All active rules | Extracts code cells and runs Python scanner |
+| Notebooks | `.ipynb` | LLM02, LLM07, LLM10 | Code cells run through Python scanner; **LLM01 (prompt injection) is intentionally skipped** — notebook functions are called locally with no external input boundary, so taint analysis produces false positives on tutorial/example code |
+
+> **Note on placeholder secrets:** Example/placeholder secret values such as
+> `sk-your_openai_key_here` or `sk-example-key` are automatically excluded from
+> LLM02 findings across all file types, including Python. Only key-shaped strings
+> that look like real credentials are reported.
 
 **No new dependencies** are required — all handlers use stdlib or existing dependencies.
 

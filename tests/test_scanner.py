@@ -2112,7 +2112,7 @@ class TestScannerNonPythonIntegration:
 
 
 # ---------------------------------------------------------------------------
-# Bug-fix tests: placeholder value suppression, notebook LLM01 downgrade,
+# Bug-fix tests: placeholder value suppression, notebook LLM01 exclusion,
 # and verbose INFO findings
 # ---------------------------------------------------------------------------
 
@@ -2202,8 +2202,8 @@ class TestPlaceholderValueSuppression:
         )
 
 
-class TestNotebookLLM01Downgrade:
-    """Notebook code-cell LLM01 findings must be downgraded to INFO severity."""
+class TestNotebookLLM01Excluded:
+    """LLM01 findings from notebook code cells must be excluded entirely."""
 
     _NOTEBOOK_WITH_INJECTION = """{
   "cells": [
@@ -2217,16 +2217,15 @@ class TestNotebookLLM01Downgrade:
   "nbformat_minor": 5
 }"""
 
-    def test_notebook_llm01_downgraded_to_info(self, tmp_path):
-        """LLM01 findings from notebook code cells must be INFO severity."""
+    def test_notebook_llm01_excluded(self, tmp_path):
+        """LLM01 findings from notebook code cells must be completely excluded."""
         from llmarmor.handlers.notebook import scan_notebook_file
         findings = scan_notebook_file(
             str(tmp_path / "tutorial.ipynb"), self._NOTEBOOK_WITH_INJECTION
         )
         llm01 = [f for f in findings if f["rule_id"] == "LLM01"]
-        assert llm01, f"Expected LLM01 findings from notebook; got: {findings}"
-        assert all(f["severity"] == "INFO" for f in llm01), (
-            f"Notebook LLM01 findings should be INFO severity; got: {[f['severity'] for f in llm01]}"
+        assert llm01 == [], (
+            f"Notebook LLM01 findings should be completely excluded; got: {llm01}"
         )
 
 
