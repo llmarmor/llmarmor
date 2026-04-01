@@ -1038,7 +1038,7 @@ msg = {"role": "system", "content": f"Help: {tainted_var}"}
         line = 'url = "#step-3-ask-gpt-4-1-to-critique-the-prompt"\n'
         findings = check_sensitive_info(tmp_path / "safe.py", line)
         assert findings == [], (
-            "'sk-' inside a word like 'ask-' should not be flagged; got: {findings}"
+            f"'sk-' inside a word like 'ask-' should not be flagged; got: {findings}"
         )
 
     def test_still_flags_real_key_with_digits(self, tmp_path: Path):
