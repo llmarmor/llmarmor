@@ -1015,6 +1015,25 @@ msg = {"role": "system", "content": f"Help: {tainted_var}"}
         findings = check_sensitive_info(tmp_path / "safe.py", line)
         assert findings == [], f"Short sk- tokens should not be flagged; got: {findings}"
 
+    def test_does_not_flag_env_var_name_reference(self, tmp_path: Path):
+        """Env-var name references like sk-OPENAI_API_KEY_HERE must not be flagged (no digit)."""
+        line = 'key = "sk-OPENAI_API_KEY_HERE_PLEASE"\n'
+        findings = check_sensitive_info(tmp_path / "safe.py", line)
+        assert findings == [], f"Env-var name references should not be flagged; got: {findings}"
+
+    def test_does_not_flag_url_slug_with_uppercase(self, tmp_path: Path):
+        """URL slugs with no digits like sk-SOME-WORDS-ABOUT-MODELS must not be flagged."""
+        line = 'url = "sk-THE-MODEL-TO-ADOPT-A-PERSONA-HERE"\n'
+        findings = check_sensitive_info(tmp_path / "safe.py", line)
+        assert findings == [], f"URL slug without digits should not be flagged; got: {findings}"
+
+    def test_still_flags_real_key_with_digits(self, tmp_path: Path):
+        """Real OpenAI keys that contain digits must still be detected."""
+        line = 'key = "sk-proj-AbCdEf123456789abcdefghij"\n'
+        findings = check_sensitive_info(tmp_path / "vuln.py", line)
+        assert len(findings) == 1
+        assert findings[0]["rule_id"] == "LLM02"
+
 
 class TestSystemPromptLeak:
     VULNERABLE_CODE = (
@@ -2055,6 +2074,37 @@ class TestNotebookHandler:
         from llmarmor.handlers.notebook import scan_notebook_file
         findings = scan_notebook_file(str(tmp_path / "broken.ipynb"), "not json at all")
         assert findings == []
+
+    def test_no_false_positive_for_env_var_name_in_markdown(self, tmp_path):
+        """Markdown cells referencing env var names like OPENAI_API_KEY must not trigger LLM02.
+
+        Regression test: the old pattern matched sk-OPENAI_API_KEY_... because it
+        only required uppercase/digit (not a digit), so env-var-style strings with no
+        digits passed the lookahead.
+        """
+        notebook = """{
+  "cells": [
+    {
+      "cell_type": "markdown",
+      "source": [
+        "## Setup\\n",
+        "\\n",
+        "Make sure you have the following installed:\\n",
+        "- The `openai` Python package and `OPENAI_API_KEY` set as an environment variable\\n"
+      ]
+    }
+  ],
+  "metadata": {},
+  "nbformat": 4,
+  "nbformat_minor": 5
+}"""
+        from llmarmor.handlers.notebook import scan_notebook_file
+        findings = scan_notebook_file(str(tmp_path / "tutorial.ipynb"), notebook)
+        llm02 = [f for f in findings if f["rule_id"] == "LLM02"]
+        assert llm02 == [], (
+            "Markdown cell mentioning OPENAI_API_KEY (env var name) should not "
+            f"trigger LLM02; got: {llm02}"
+        )
 
 
 class TestScannerNonPythonIntegration:
