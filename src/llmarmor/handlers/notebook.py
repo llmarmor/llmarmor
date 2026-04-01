@@ -62,12 +62,14 @@ def scan_notebook_file(filepath: str, content: str) -> list[dict]:
             except (SyntaxError, ValueError, RecursionError):  # noqa: BLE001
                 pass
             for f in cell_findings:
-                # Notebooks are typically tutorial/example code; downgrade LLM01
-                # findings to INFO to avoid noisy false positives.
+                # Notebooks are tutorial/example code — skip prompt injection
+                # checks entirely to avoid noisy false positives from taint
+                # analysis on locally-called functions with no external input
+                # boundary.
                 if f["rule_id"] == "LLM01":
-                    f["severity"] = "INFO"
+                    continue
                 f["filepath"] = filepath
-            findings.extend(cell_findings)
+                findings.append(f)
 
         elif cell_type in ("markdown", "raw"):
             # Scan for accidentally committed API keys in markdown text.
