@@ -8,7 +8,16 @@ import re
 
 # OpenAI keys: sk- followed by 20+ alphanumeric/dash/underscore chars,
 # but NOT sk-ant- (Anthropic).
-OPENAI_KEY_PATTERN = re.compile(r"sk-(?!ant-)(?:[A-Za-z0-9_-]{20,})")
+#
+# Real OpenAI keys (sk-proj-..., sk-svcacct-..., legacy sk-...) always contain
+# a mix of uppercase letters, lowercase letters, and digits.  Pure
+# lowercase-and-hyphen strings like URL path slugs (e.g. the substring
+# "sk-the-model-to-adopt-a-persona" inside a URL) only contain [a-z-], so we
+# require at least one uppercase letter OR digit in the matched value to
+# eliminate those false positives while keeping every real key format.
+OPENAI_KEY_PATTERN = re.compile(
+    r"sk-(?!ant-)(?=[A-Za-z0-9_-]*[A-Z0-9][A-Za-z0-9_-]*)(?:[A-Za-z0-9_-]{20,})"
+)
 
 # Anthropic keys: sk-ant- followed by 20+ chars.
 ANTHROPIC_KEY_PATTERN = re.compile(r"sk-ant-[A-Za-z0-9_-]{20,}")

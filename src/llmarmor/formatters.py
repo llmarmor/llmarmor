@@ -217,10 +217,15 @@ def _build_summary(findings: Sequence[dict]) -> dict:
 
 
 def _group_findings(findings: Sequence[dict]) -> list[dict]:
-    """Group flat findings by (rule_id, severity, description) → locations list."""
+    """Group flat findings by (rule_id, severity) → locations list.
+
+    Grouping excludes the description so that findings whose severity was
+    promoted by strict mode (which may have a different description text) are
+    still merged into the same group rather than split into two.
+    """
     groups: dict[tuple, dict] = {}
     for f in findings:
-        key = (f["rule_id"], f["severity"], f.get("description", ""))
+        key = (f["rule_id"], f["severity"])
         if key not in groups:
             groups[key] = {
                 "rule_id": f["rule_id"],
