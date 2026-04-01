@@ -1,6 +1,6 @@
 """Handler for ``.env`` files — detect hardcoded secrets (LLM02)."""
 
-from llmarmor.secret_patterns import SECRET_PATTERNS, TEST_VAR_PATTERN
+from llmarmor.secret_patterns import PLACEHOLDER_VALUE_PATTERN, SECRET_PATTERNS, TEST_VAR_PATTERN
 
 RULE_ID = "LLM02"
 RULE_NAME = "Sensitive Information Disclosure"
@@ -40,6 +40,8 @@ def scan_env_file(filepath: str, content: str) -> list[dict]:
 
         for pattern, key_type in SECRET_PATTERNS:
             if pattern.search(value):
+                if PLACEHOLDER_VALUE_PATTERN.search(value):
+                    continue
                 findings.append(
                     {
                         "rule_id": RULE_ID,

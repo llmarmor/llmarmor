@@ -2,7 +2,7 @@
 
 import re
 
-from llmarmor.secret_patterns import SECRET_PATTERNS, TEST_VAR_PATTERN
+from llmarmor.secret_patterns import PLACEHOLDER_VALUE_PATTERN, SECRET_PATTERNS, TEST_VAR_PATTERN
 
 # String literals (single, double, or template) following a prompt-related variable name.
 _PROMPT_VAR_PATTERN = re.compile(
@@ -36,7 +36,8 @@ def scan_js_file(filepath: str, content: str) -> list[dict]:
         # --- LLM02: Secrets ---
         if not TEST_VAR_PATTERN.search(line):
             for pattern, key_type in SECRET_PATTERNS:
-                if pattern.search(line):
+                m = pattern.search(line)
+                if m and not PLACEHOLDER_VALUE_PATTERN.search(m.group(0)):
                     findings.append(
                         {
                             "rule_id": "LLM02",

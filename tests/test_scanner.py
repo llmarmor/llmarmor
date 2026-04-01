@@ -260,14 +260,15 @@ msg = {"role": "assistant", "content": f"Echo: {user_input}"}
         )
 
     def test_user_role_standalone_not_flagged(self, tmp_path: Path):
-        """{"role": "user", "content": tainted_var} must NOT produce an AST LLM01 finding."""
+        """{"role": "user", "content": tainted_var} must only produce an INFO-level finding (hidden by default)."""
         code = """\
 user_input = input("prompt")
 msg = {"role": "user", "content": user_input}
 """
         result = self._analyze(tmp_path, code)
-        assert not any(f["rule_id"] == "LLM01" for f in result["findings"]), (
-            "User role with standalone tainted variable should not produce AST LLM01 finding; "
+        llm01 = [f for f in result["findings"] if f["rule_id"] == "LLM01"]
+        assert all(f["severity"] == "INFO" for f in llm01), (
+            "User role with standalone tainted variable should only produce INFO-level LLM01 finding; "
             f"got: {result['findings']}"
         )
 
@@ -793,10 +794,11 @@ d = db.fetch(1)
     # ------------------------------------------------------------------
 
     def test_system_role_plain_name_not_flagged(self, tmp_path: Path):
-        """{"role": "system", "content": system} must NOT be flagged.
+        """{"role": "system", "content": system} must only produce INFO (hidden by default).
 
         A plain variable reference is not string interpolation — no injection
-        of instructions mixed with user data is occurring.
+        of instructions mixed with user data is occurring.  An INFO finding is
+        emitted so --verbose can surface it.
         """
         code = """\
 def handle(system, user):
@@ -804,21 +806,23 @@ def handle(system, user):
     return msg
 """
         result = self._analyze(tmp_path, code)
-        assert not any(f["rule_id"] == "LLM01" for f in result["findings"]), (
-            '{"role": "system", "content": system} (plain variable) should NOT be flagged; '
+        llm01 = [f for f in result["findings"] if f["rule_id"] == "LLM01"]
+        assert all(f["severity"] == "INFO" for f in llm01), (
+            '{"role": "system", "content": system} (plain variable) should only produce INFO-level LLM01; '
             f"got: {result['findings']}"
         )
 
     def test_user_role_plain_name_not_flagged(self, tmp_path: Path):
-        """{"role": "user", "content": user} must NOT be flagged."""
+        """{"role": "user", "content": user} must only produce INFO (hidden by default)."""
         code = """\
 def handle(user):
     msg = {"role": "user", "content": user}
     return msg
 """
         result = self._analyze(tmp_path, code)
-        assert not any(f["rule_id"] == "LLM01" for f in result["findings"]), (
-            '{"role": "user", "content": user} (plain variable) should NOT be flagged; '
+        llm01 = [f for f in result["findings"] if f["rule_id"] == "LLM01"]
+        assert all(f["severity"] == "INFO" for f in llm01), (
+            '{"role": "user", "content": user} (plain variable) should only produce INFO-level LLM01; '
             f"got: {result['findings']}"
         )
 
@@ -847,7 +851,7 @@ msg = {"role": "system", "content": "Help: " + tainted_var}
         )
 
     def test_messages_list_plain_names_not_flagged(self, tmp_path: Path):
-        """List of dicts with plain variable content must NOT be flagged.
+        """List of dicts with plain variable content must only produce INFO findings.
 
         messages = [
             {"role": "system", "content": system},
@@ -863,8 +867,9 @@ def handle(system, user):
     return messages
 """
         result = self._analyze(tmp_path, code)
-        assert not any(f["rule_id"] == "LLM01" for f in result["findings"]), (
-            "messages list with plain variable content should NOT be flagged; "
+        llm01 = [f for f in result["findings"] if f["rule_id"] == "LLM01"]
+        assert all(f["severity"] == "INFO" for f in llm01), (
+            "messages list with plain variable content should only produce INFO-level LLM01; "
             f"got: {result['findings']}"
         )
 
@@ -1176,15 +1181,16 @@ def handle(system, user):
         )
 
     def test_normal_system_role_plain_tainted_var_not_flagged(self, tmp_path: Path):
-        """In normal mode, plain tainted variable as system content must NOT be flagged."""
+        """In normal mode, plain tainted variable as system content must only produce INFO (hidden by default)."""
         code = """\
 def handle(system, user):
     msg = {"role": "system", "content": system}
     return msg
 """
         result = self._analyze_normal(tmp_path, code)
-        assert not any(f["rule_id"] == "LLM01" for f in result["findings"]), (
-            "Normal mode: plain tainted variable as system content should NOT be flagged; "
+        llm01 = [f for f in result["findings"] if f["rule_id"] == "LLM01"]
+        assert all(f["severity"] == "INFO" for f in llm01), (
+            "Normal mode: plain tainted variable as system content should only produce INFO-level LLM01; "
             f"got: {result['findings']}"
         )
 
@@ -1216,15 +1222,16 @@ def handle(user):
         )
 
     def test_normal_user_role_plain_tainted_var_not_flagged(self, tmp_path: Path):
-        """In normal mode, plain tainted variable as user content must NOT be flagged."""
+        """In normal mode, plain tainted variable as user content must only produce INFO (hidden by default)."""
         code = """\
 def handle(user):
     msg = {"role": "user", "content": user}
     return msg
 """
         result = self._analyze_normal(tmp_path, code)
-        assert not any(f["rule_id"] == "LLM01" for f in result["findings"]), (
-            "Normal mode: plain tainted variable as user content should NOT be flagged; "
+        llm01 = [f for f in result["findings"] if f["rule_id"] == "LLM01"]
+        assert all(f["severity"] == "INFO" for f in llm01), (
+            "Normal mode: plain tainted variable as user content should only produce INFO-level LLM01; "
             f"got: {result['findings']}"
         )
 
@@ -2102,3 +2109,202 @@ class TestScannerNonPythonIntegration:
         findings = run_scan(str(tmp_path))
         llm02 = [f for f in findings if f["rule_id"] == "LLM02"]
         assert llm02, "Scanner should still detect LLM02 in .py files"
+
+
+# ---------------------------------------------------------------------------
+# Bug-fix tests: placeholder value suppression, notebook LLM01 downgrade,
+# and verbose INFO findings
+# ---------------------------------------------------------------------------
+
+
+class TestPlaceholderValueSuppression:
+    """PLACEHOLDER_VALUE_PATTERN must prevent placeholder keys from being flagged."""
+
+    _REAL_KEY = "sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234"
+
+    def test_placeholder_value_not_flagged_py(self, tmp_path):
+        """sk-your_openai_key_here must NOT be flagged as a real secret."""
+        line = 'OPENAI_API_KEY = "sk-your_openai_key_here"\n'
+        findings = check_sensitive_info(tmp_path / "safe.py", line)
+        assert findings == [], (
+            "Placeholder value 'sk-your_openai_key_here' should not be flagged; "
+            f"got: {findings}"
+        )
+
+    def test_placeholder_value_in_comment_not_flagged_py(self, tmp_path):
+        """# OPENAI_API_KEY=sk-your_openai_key_here must NOT be flagged."""
+        line = "# OPENAI_API_KEY=sk-your_openai_key_here\n"
+        findings = check_sensitive_info(tmp_path / "safe.py", line)
+        assert findings == [], (
+            f"Placeholder key in comment should not be flagged; got: {findings}"
+        )
+
+    def test_real_key_still_flagged_py(self, tmp_path):
+        """A real-looking OpenAI key must still be flagged."""
+        line = f'OPENAI_API_KEY = "{self._REAL_KEY}"\n'
+        findings = check_sensitive_info(tmp_path / "vuln.py", line)
+        assert any(f["rule_id"] == "LLM02" for f in findings), (
+            f"Real key should be flagged; got: {findings}"
+        )
+
+    def test_placeholder_not_flagged_env(self, tmp_path):
+        """sk-your-api-key-here in .env must NOT be flagged."""
+        from llmarmor.handlers.env import scan_env_file
+        content = "OPENAI_API_KEY=sk-your-api-key-here\n"
+        findings = scan_env_file(str(tmp_path / ".env"), content)
+        assert findings == [], (
+            f"Placeholder env value should not be flagged; got: {findings}"
+        )
+
+    def test_real_key_flagged_env(self, tmp_path):
+        """A real-looking key in .env must still be flagged."""
+        from llmarmor.handlers.env import scan_env_file
+        content = f"OPENAI_API_KEY={self._REAL_KEY}\n"
+        findings = scan_env_file(str(tmp_path / ".env"), content)
+        assert any(f["rule_id"] == "LLM02" for f in findings), (
+            f"Real env key should be flagged; got: {findings}"
+        )
+
+    def test_placeholder_not_flagged_yaml(self, tmp_path):
+        """sk-your_openai_key_here in YAML must NOT be flagged."""
+        from llmarmor.handlers.yaml_handler import scan_yaml_file
+        content = "openai_key: sk-your_openai_key_here\n"
+        findings = scan_yaml_file(str(tmp_path / "config.yaml"), content)
+        assert findings == [], (
+            f"Placeholder YAML value should not be flagged; got: {findings}"
+        )
+
+    def test_placeholder_not_flagged_json(self, tmp_path):
+        """sk-your_openai_key_here in JSON must NOT be flagged."""
+        from llmarmor.handlers.json_handler import scan_json_file
+        content = '{"openai_key": "sk-your_openai_key_here"}\n'
+        findings = scan_json_file(str(tmp_path / "config.json"), content)
+        assert findings == [], (
+            f"Placeholder JSON value should not be flagged; got: {findings}"
+        )
+
+    def test_placeholder_not_flagged_toml(self, tmp_path):
+        """sk-your_openai_key_here in TOML must NOT be flagged."""
+        from llmarmor.handlers.toml_handler import scan_toml_file
+        content = 'openai_key = "sk-your_openai_key_here"\n'
+        findings = scan_toml_file(str(tmp_path / "config.toml"), content)
+        assert findings == [], (
+            f"Placeholder TOML value should not be flagged; got: {findings}"
+        )
+
+    def test_placeholder_not_flagged_js(self, tmp_path):
+        """sk-your_openai_key_here in JS must NOT be flagged."""
+        from llmarmor.handlers.js_handler import scan_js_file
+        content = 'const key = "sk-your_openai_key_here";\n'
+        findings = scan_js_file(str(tmp_path / "app.js"), content)
+        assert findings == [], (
+            f"Placeholder JS value should not be flagged; got: {findings}"
+        )
+
+
+class TestNotebookLLM01Downgrade:
+    """Notebook code-cell LLM01 findings must be downgraded to INFO severity."""
+
+    _NOTEBOOK_WITH_INJECTION = """{
+  "cells": [
+    {
+      "cell_type": "code",
+      "source": ["user_input = input('query')\\n", "msg = {'role': 'system', 'content': f'Help: {user_input}'}\\n"]
+    }
+  ],
+  "metadata": {},
+  "nbformat": 4,
+  "nbformat_minor": 5
+}"""
+
+    def test_notebook_llm01_downgraded_to_info(self, tmp_path):
+        """LLM01 findings from notebook code cells must be INFO severity."""
+        from llmarmor.handlers.notebook import scan_notebook_file
+        findings = scan_notebook_file(
+            str(tmp_path / "tutorial.ipynb"), self._NOTEBOOK_WITH_INJECTION
+        )
+        llm01 = [f for f in findings if f["rule_id"] == "LLM01"]
+        assert llm01, f"Expected LLM01 findings from notebook; got: {findings}"
+        assert all(f["severity"] == "INFO" for f in llm01), (
+            f"Notebook LLM01 findings should be INFO severity; got: {[f['severity'] for f in llm01]}"
+        )
+
+
+class TestVerboseInfoFindings:
+    """Plain tainted variables in role messages produce INFO findings visible with --verbose."""
+
+    def test_normal_mode_plain_system_var_produces_info(self, tmp_path):
+        """Plain tainted var in system role must produce INFO (not MEDIUM) in normal mode."""
+        from llmarmor.ast_analysis import analyze
+        code = """\
+def handle(system_prompt):
+    msg = {"role": "system", "content": system_prompt}
+    return msg
+"""
+        result = analyze(str(tmp_path / "app.py"), code, strict=False)
+        llm01 = [f for f in result["findings"] if f["rule_id"] == "LLM01"]
+        assert llm01, "Expected at least one LLM01 finding in normal mode"
+        assert all(f["severity"] == "INFO" for f in llm01), (
+            f"Normal mode: plain system var should produce INFO; got: {[f['severity'] for f in llm01]}"
+        )
+
+    def test_normal_mode_plain_user_var_produces_info(self, tmp_path):
+        """Plain tainted var in user role must produce INFO in normal mode."""
+        from llmarmor.ast_analysis import analyze
+        code = """\
+def handle(user_input):
+    msg = {"role": "user", "content": user_input}
+    return msg
+"""
+        result = analyze(str(tmp_path / "app.py"), code, strict=False)
+        llm01 = [f for f in result["findings"] if f["rule_id"] == "LLM01"]
+        assert llm01, "Expected at least one LLM01 finding in normal mode"
+        assert all(f["severity"] == "INFO" for f in llm01), (
+            f"Normal mode: plain user var should produce INFO; got: {[f['severity'] for f in llm01]}"
+        )
+
+    def test_verbose_render_shows_info_findings(self):
+        """render() with verbose=True must include INFO findings in output."""
+        import io
+        from rich.console import Console
+        from llmarmor.formatters import render
+
+        findings = [
+            {
+                "rule_id": "LLM01",
+                "rule_name": "Prompt Injection",
+                "severity": "INFO",
+                "filepath": "app.py",
+                "line": 5,
+                "description": "Plain tainted variable in system role.",
+                "fix_suggestion": "Validate the variable.",
+            }
+        ]
+        buf = io.StringIO()
+        console = Console(file=buf, highlight=False)
+        render(findings, fmt="grouped", console=console, scan_path=".", verbose=True)
+        output = buf.getvalue()
+        assert "LLM01" in output, "INFO finding should appear in verbose output"
+
+    def test_non_verbose_render_hides_info_findings(self):
+        """render() with verbose=False must hide INFO findings."""
+        import io
+        from rich.console import Console
+        from llmarmor.formatters import render
+
+        findings = [
+            {
+                "rule_id": "LLM01",
+                "rule_name": "Prompt Injection",
+                "severity": "INFO",
+                "filepath": "app.py",
+                "line": 5,
+                "description": "Plain tainted variable in system role.",
+                "fix_suggestion": "Validate the variable.",
+            }
+        ]
+        buf = io.StringIO()
+        console = Console(file=buf, highlight=False)
+        render(findings, fmt="grouped", console=console, scan_path=".", verbose=False)
+        output = buf.getvalue()
+        assert "LLM01" not in output, "INFO finding should be hidden in non-verbose output"

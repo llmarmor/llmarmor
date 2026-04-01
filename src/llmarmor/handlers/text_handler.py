@@ -4,7 +4,7 @@ and system prompts (LLM07).
 
 import re
 
-from llmarmor.secret_patterns import SECRET_PATTERNS, TEST_VAR_PATTERN
+from llmarmor.secret_patterns import PLACEHOLDER_VALUE_PATTERN, SECRET_PATTERNS, TEST_VAR_PATTERN
 
 # Long prose that looks like a system prompt: matches lines/blocks starting with
 # common system-prompt indicators and exceeding the minimum length.
@@ -40,7 +40,8 @@ def scan_text_file(filepath: str, content: str) -> list[dict]:
         # --- LLM02: Secrets ---
         if not TEST_VAR_PATTERN.search(line):
             for pattern, key_type in SECRET_PATTERNS:
-                if pattern.search(line):
+                m = pattern.search(line)
+                if m and not PLACEHOLDER_VALUE_PATTERN.search(m.group(0)):
                     findings.append(
                         {
                             "rule_id": "LLM02",

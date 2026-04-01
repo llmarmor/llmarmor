@@ -10,7 +10,7 @@ import json
 import warnings
 from pathlib import Path
 
-from llmarmor.secret_patterns import SECRET_PATTERNS, TEST_VAR_PATTERN
+from llmarmor.secret_patterns import PLACEHOLDER_VALUE_PATTERN, SECRET_PATTERNS, TEST_VAR_PATTERN
 
 _LLM02_FIX = (
     "Never hardcode API keys in notebook cells. Use environment variables "
@@ -62,6 +62,10 @@ def scan_notebook_file(filepath: str, content: str) -> list[dict]:
             except (SyntaxError, ValueError, RecursionError):  # noqa: BLE001
                 pass
             for f in cell_findings:
+                # Notebooks are typically tutorial/example code; downgrade LLM01
+                # findings to INFO to avoid noisy false positives.
+                if f["rule_id"] == "LLM01":
+                    f["severity"] = "INFO"
                 f["filepath"] = filepath
             findings.extend(cell_findings)
 
@@ -71,7 +75,8 @@ def scan_notebook_file(filepath: str, content: str) -> list[dict]:
                 if not line.strip() or TEST_VAR_PATTERN.search(line):
                     continue
                 for pattern, key_type in SECRET_PATTERNS:
-                    if pattern.search(line):
+                    m = pattern.search(line)
+                    if m and not PLACEHOLDER_VALUE_PATTERN.search(m.group(0)):
                         findings.append(
                             {
                                 "rule_id": "LLM02",
