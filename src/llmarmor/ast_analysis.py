@@ -35,7 +35,9 @@ import ast
 from pathlib import Path as _Path
 
 _LLM01 = "LLM01"
+_LLM05 = "LLM05"
 _LLM07 = "LLM07"
+_LLM08 = "LLM08"
 
 # Root receiver names for objects that are considered safe config/DB sources.
 # Assignments like ``prompt = config.get("x")`` or ``prompt = settings.DEFAULT``
@@ -84,6 +86,31 @@ _LLM10_METHODS: frozenset[str] = frozenset(
 )
 
 _MIN_SYSTEM_PROMPT_LEN = 100
+
+# ---------------------------------------------------------------------------
+# LLM05 — Improper Output Handling: dangerous sink sets
+# ---------------------------------------------------------------------------
+
+# Built-in code-execution sinks: eval / exec / compile
+_DANGEROUS_EXEC_SINKS: frozenset[str] = frozenset(["eval", "exec", "compile"])
+
+# Shell-execution sinks (method chains resolved to bare attribute name)
+_DANGEROUS_SHELL_SINKS: frozenset[str] = frozenset(
+    [
+        "subprocess.run",
+        "subprocess.call",
+        "subprocess.check_call",
+        "subprocess.check_output",
+        "subprocess.Popen",
+        "os.system",
+        "os.popen",
+    ]
+)
+
+# HTML / XSS rendering sinks
+_DANGEROUS_HTML_SINKS: frozenset[str] = frozenset(
+    ["Markup", "render_template_string", "mark_safe"]
+)
 
 # Path segments (directory or file stem, case-insensitive) that indicate an
 # eval / test / grading harness.  When detected, LLM01 findings are downgraded
@@ -502,6 +529,21 @@ class _Analyzer(ast.NodeVisitor):
         if _is_llm10_call(method):
             self._handle_llm10(node)
 
+        # LLM05: dangerous execution sinks receiving tainted input.
+        if self._check_llm05_exec_sinks(node):
+            self.generic_visit(node)
+            return
+        if self._check_llm05_shell_sinks(node, method):
+            self.generic_visit(node)
+            return
+        if self._check_llm05_html_sinks(node, method):
+            self.generic_visit(node)
+            return
+        self._check_llm05_json_loads(node, method)
+
+        # LLM08: taint-tracked dynamic dispatch.
+        self._check_llm08_dynamic_dispatch(node, method)
+
         self.generic_visit(node)
 
     def _handle_llm10(self, node: ast.Call) -> None:
@@ -519,6 +561,230 @@ class _Analyzer(ast.NodeVisitor):
                 if "max_tokens" in keys or "max_output_tokens" in keys:
                     self.cleared.add((node.lineno, "LLM10"))
                     return
+
+    # ------------------------------------------------------------------
+    # LLM05 — Improper Output Handling (AST taint-tracked checks)
+    # ------------------------------------------------------------------
+
+    def _check_llm05_exec_sinks(self, node: ast.Call) -> bool:
+        """Return True (and emit a finding) when a tainted var is passed to eval/exec/compile."""
+        func = node.func
+        # Bare function call: eval(x), exec(x), compile(x)
+        if isinstance(func, ast.Name) and func.id in _DANGEROUS_EXEC_SINKS:
+            if node.args and self._is_tainted_node(node.args[0]):
+                self.findings.append(
+                    _finding(
+                        _LLM05,
+                        "Improper Output Handling",
+                        "CRITICAL",
+                        self.filepath,
+                        node.lineno,
+                        (
+                            f"Tainted value passed to {func.id}() — this enables "
+                            "arbitrary code execution from user-controlled input."
+                        ),
+                        (
+                            "Never pass user-controlled or LLM-generated data to "
+                            "eval(), exec(), or compile(). Validate strictly or "
+                            "use a safe sandbox."
+                        ),
+                    )
+                )
+                self.cleared.add((node.lineno, _LLM05))
+                return True
+        return False
+
+    def _check_llm05_shell_sinks(self, node: ast.Call, method: str) -> bool:
+        """Return True (and emit a finding) when a tainted var is passed to a shell sink."""
+        if method in _DANGEROUS_SHELL_SINKS:
+            if node.args and self._is_tainted_node(node.args[0]):
+                self.findings.append(
+                    _finding(
+                        _LLM05,
+                        "Improper Output Handling",
+                        "CRITICAL",
+                        self.filepath,
+                        node.lineno,
+                        (
+                            f"Tainted value passed to {method}() — this enables "
+                            "OS command injection from user-controlled input."
+                        ),
+                        (
+                            "Never pass user-controlled or LLM-generated data to "
+                            "shell or subprocess calls. Use a fixed command allowlist "
+                            "and pass arguments as a list."
+                        ),
+                    )
+                )
+                self.cleared.add((node.lineno, _LLM05))
+                return True
+        return False
+
+    def _check_llm05_html_sinks(self, node: ast.Call, method: str) -> bool:
+        """Return True (and emit a finding) when a tainted var is passed to an HTML sink."""
+        # method may be a full attr chain; check the last component
+        sink_name = method.split(".")[-1] if "." in method else method
+        if sink_name in _DANGEROUS_HTML_SINKS:
+            if node.args and self._is_tainted_node(node.args[0]):
+                self.findings.append(
+                    _finding(
+                        _LLM05,
+                        "Improper Output Handling",
+                        "HIGH",
+                        self.filepath,
+                        node.lineno,
+                        (
+                            f"Tainted value passed to {sink_name}() — this may enable "
+                            "cross-site scripting (XSS) or HTML injection."
+                        ),
+                        (
+                            "Sanitise or escape user-controlled / LLM-generated data "
+                            "before passing it to HTML rendering functions."
+                        ),
+                    )
+                )
+                self.cleared.add((node.lineno, _LLM05))
+                return True
+        return False
+
+    def _check_llm05_json_loads(self, node: ast.Call, method: str) -> bool:
+        """Return True (and emit a finding) when a tainted var is passed to json.loads()."""
+        if method == "json.loads":
+            if node.args and self._is_tainted_node(node.args[0]):
+                severity = "MEDIUM" if self.strict else "INFO"
+                self.findings.append(
+                    _finding(
+                        _LLM05,
+                        "Improper Output Handling",
+                        severity,
+                        self.filepath,
+                        node.lineno,
+                        (
+                            "Tainted value passed to json.loads() without schema "
+                            "validation. If the parsed result feeds further unsafe "
+                            "operations this may be exploitable."
+                        ),
+                        (
+                            "Validate JSON deserialised from user-controlled or "
+                            "LLM-generated data against a strict schema (e.g. pydantic) "
+                            "before using the result in further operations."
+                        ),
+                    )
+                )
+                self.cleared.add((node.lineno, _LLM05))
+                return True
+        return False
+
+    # ------------------------------------------------------------------
+    # LLM08 — Excessive Agency (AST taint-tracked checks)
+    # ------------------------------------------------------------------
+
+    def _check_llm08_dynamic_dispatch(self, node: ast.Call, method: str) -> bool:
+        """Return True (and emit a finding) for taint-tracked dynamic dispatch patterns.
+
+        Detects:
+        * ``getattr(module, tainted_name)()`` — function name controlled by tainted var
+        * ``globals()[tainted_name]()`` — globals dict lookup with tainted key
+        """
+        func = node.func
+
+        # getattr(obj, tainted_name) — the call node IS the getattr call itself;
+        # we detect when it is used as a callable (i.e. getattr(...)(...))
+        # by checking whether the *parent* call's func is this node.
+        # At visit_Call time, node is the *outer* call: node.func is the getattr call.
+        if isinstance(func, ast.Call):
+            inner = func
+            inner_func = inner.func
+            # getattr(module, tainted_name)
+            if (
+                isinstance(inner_func, ast.Name)
+                and inner_func.id == "getattr"
+                and len(inner.args) >= 2
+                and self._is_tainted_node(inner.args[1])
+            ):
+                self.findings.append(
+                    _finding(
+                        _LLM08,
+                        "Excessive Agency",
+                        "CRITICAL",
+                        self.filepath,
+                        node.lineno,
+                        (
+                            "getattr() is called with a tainted (user-controlled) "
+                            "function name. An attacker can redirect execution to any "
+                            "method on the target object."
+                        ),
+                        (
+                            "Validate the function name against an explicit allowlist "
+                            "before calling: `if name in ALLOWED: getattr(obj, name)()`."
+                        ),
+                    )
+                )
+                self.cleared.add((node.lineno, _LLM08))
+                return True
+
+            # globals()[tainted_name]()
+            # node.func is a Subscript: globals()[tainted_name]
+            if isinstance(func, ast.Subscript):
+                subscript_val = func.value
+                if (
+                    isinstance(subscript_val, ast.Call)
+                    and isinstance(subscript_val.func, ast.Name)
+                    and subscript_val.func.id == "globals"
+                    and self._is_tainted_node(func.slice)
+                ):
+                    self.findings.append(
+                        _finding(
+                            _LLM08,
+                            "Excessive Agency",
+                            "CRITICAL",
+                            self.filepath,
+                            node.lineno,
+                            (
+                                "globals() is subscripted with a tainted key and the "
+                                "result is called. An attacker can invoke any function "
+                                "in the module namespace."
+                            ),
+                            (
+                                "Use an explicit allowlist instead of globals() dispatch: "
+                                "`ALLOWED = {'fn': fn}; ALLOWED[name]()`."
+                            ),
+                        )
+                    )
+                    self.cleared.add((node.lineno, _LLM08))
+                    return True
+
+        # globals()[tainted_name]() — node.func is the Subscript directly
+        if isinstance(func, ast.Subscript):
+            subscript_val = func.value
+            if (
+                isinstance(subscript_val, ast.Call)
+                and isinstance(subscript_val.func, ast.Name)
+                and subscript_val.func.id == "globals"
+                and self._is_tainted_node(func.slice)
+            ):
+                self.findings.append(
+                    _finding(
+                        _LLM08,
+                        "Excessive Agency",
+                        "CRITICAL",
+                        self.filepath,
+                        node.lineno,
+                        (
+                            "globals() is subscripted with a tainted key and the "
+                            "result is called. An attacker can invoke any function "
+                            "in the module namespace."
+                        ),
+                        (
+                            "Use an explicit allowlist instead of globals() dispatch: "
+                            "`ALLOWED = {'fn': fn}; ALLOWED[name]()`."
+                        ),
+                    )
+                )
+                self.cleared.add((node.lineno, _LLM08))
+                return True
+
+        return False
 
     # ------------------------------------------------------------------
     # Taint helper
