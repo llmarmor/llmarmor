@@ -5,8 +5,9 @@
 Scan your codebase for security vulnerabilities mapped to the
 [OWASP Top 10 for Large Language Models](https://owasp.org/www-project-top-10-for-large-language-model-applications/).
 LLM Armor combines fast regex pattern-matching with AST-based taint analysis
-to catch prompt injection, leaked secrets, exposed system prompts, and unbounded
-API consumption — across Python files, config files, notebooks, and more.
+to catch prompt injection, leaked secrets, exposed system prompts, improper
+output handling, excessive agent permissions, and unbounded API consumption —
+across Python files, config files, notebooks, and more.
 
 [![PyPI version](https://img.shields.io/pypi/v/llmarmor.svg)](https://pypi.org/project/llmarmor/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
@@ -210,6 +211,9 @@ Recommended for pre-release security audits, compliance reviews, and new codebas
 | Tainted variable passed directly as system role `content` | MEDIUM | User controls the entire system instruction without sanitization |
 | Tainted variable passed directly as user role `content` | LOW | Consider input validation, length limits, and content filtering |
 | Hardcoded system prompt in source code | MEDIUM | May leak proprietary instructions if code is public or client-bundled |
+| `json.loads()` with LLM-named variable | MEDIUM | Promoted from INFO — deserialising unvalidated LLM output is risky |
+| Broad agent tool descriptions (e.g., "use any tool") | MEDIUM | Promoted from INFO — may indicate missing explicit allowlist |
+| Agent loop tool/function name retrieved from LLM response | MEDIUM | Promoted from INFO — validate against allowlist before dispatching |
 | Eval/test file findings | Not downgraded | Treated the same as production code |
 
 ### Verbose Mode
@@ -331,7 +335,7 @@ with appropriate detection logic:
 
 | File Type | Extensions | Rules Detected | Notes |
 |---|---|---|---|
-| Python | `.py` | LLM01, LLM02, LLM07, LLM10 | Full dual-layer analysis (regex + AST) |
+| Python | `.py` | LLM01, LLM02, LLM05, LLM07, LLM08, LLM10 | Full dual-layer analysis (regex + AST) |
 | Env files | `.env` | LLM02 | Parses `KEY=value` pairs, strips quotes |
 | YAML/Config | `.yaml`, `.yml` | LLM02, LLM07 | Regex-based; no pyyaml dependency |
 | JSON | `.json` | LLM02, LLM07 | Regex-based; stdlib json for validation |
@@ -361,10 +365,10 @@ The following directories are automatically skipped during scanning:
 |---|---|---|
 | LLM01 | Prompt Injection — unsanitized user input in LLM prompts | 🟢 Strong |
 | LLM02 | Sensitive Info Disclosure — hardcoded API keys | 🟢 Strong |
+| LLM05 | Improper Output Handling — LLM output in eval/exec/HTML/SQL | 🟢 Strong |
 | LLM07 | System Prompt Leakage — prompts in source/config files | 🟢 Strong |
+| LLM08 | Excessive Agency — over-permissioned LLM actions | 🟢 Strong |
 | LLM10 | Unbounded Consumption — missing rate limits/max\_tokens | 🟢 Strong |
-| LLM05 | Improper Output Handling — LLM output in eval/exec/HTML | 🟡 Planned |
-| LLM08 | Excessive Agency — over-permissioned LLM actions | 🟡 Planned |
 | LLM03 | Supply Chain Vulnerabilities | 🔴 Out of scope |
 | LLM04 | Data and Model Poisoning | 🔴 Out of scope |
 | LLM06 | Insecure Plugin Design | 🔴 Out of scope |
@@ -372,7 +376,6 @@ The following directories are automatically skipped during scanning:
 
 **Coverage levels:**
 - 🟢 **Strong** — dual-layer detection: regex patterns + AST-based taint analysis
-- 🟡 **Planned** — detection logic is in development
 - 🔴 **Out of scope** — not detectable by static analysis alone
 
 ### What Each Rule Detects
@@ -392,10 +395,30 @@ The following directories are automatically skipped during scanning:
 - Minimum key length enforcement (20+ chars) to avoid matching SKUs and short placeholders
 - Comment lines, test/mock variable names, and example values are skipped
 
+**LLM05 — Improper Output Handling**
+- Regex: detects LLM output variables (by name heuristic: requires both an LLM-context indicator
+  such as `llm`, `gpt`, `ai`, `chat` AND a response indicator such as `response`, `output`,
+  `text`, `content`) passed to dangerous sinks
+- AST: taint-tracked detection — flags any tainted variable (from any user-controlled source)
+  passed to dangerous sinks without the name-heuristic requirement
+- Dangerous sinks: `eval()`, `exec()`, `compile()` → CRITICAL; `subprocess.run()`, `os.system()` → CRITICAL;
+  `Markup()`, `render_template_string()`, `mark_safe()` → HIGH; SQL f-string interpolation → HIGH;
+  `json.loads()` without schema validation → INFO (normal) / MEDIUM (strict)
+
 **LLM07 — System Prompt Leakage**
 - Python: single-line + multi-line hardcoded system prompt strings (> 100 chars)
 - Config files: prompt values in `system_prompt:`, `system_message:`, `prompt:` keys
 - Only flags strings longer than 100 characters to avoid noise from short generic prompts
+
+**LLM08 — Excessive Agency**
+- Regex and AST: detects overly broad agent permissions and unsafe dynamic dispatch patterns
+- `globals()[fn_name]()` / `eval(fn_name)` — dynamic dispatch from LLM tool call → CRITICAL
+- `tools=["*"]` — wildcard tool access violating least privilege → HIGH
+- `ShellTool()`, `PythonREPLTool()`, `CodeInterpreterTool()` — shell/code execution capability → HIGH
+- `getattr(module, llm_name)()` — AST-taint-tracked dynamic dispatch → CRITICAL (AST) / HIGH (regex)
+- `auto_approve=True`, `human_in_the_loop=False` — disabled approval gates → MEDIUM
+- `FileManagementToolkit()`, `WriteFileTool()` — broad filesystem access → MEDIUM
+- Broad tool descriptions, missing explicit allowlists → INFO (normal) / MEDIUM (strict)
 
 **LLM10 — Unbounded Consumption**
 - Regex: LLM API calls (openai, anthropic, litellm, Google Gemini) without `max_tokens`

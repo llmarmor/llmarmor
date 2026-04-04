@@ -148,22 +148,25 @@ registry.register(
 )
 
 # ---------------------------------------------------------------------------
-# OWASP LLM Top 10 — Planned rules
+# OWASP LLM Top 10 — Active rules (LLM05, LLM08)
 # ---------------------------------------------------------------------------
 
 registry.register(
     RuleDefinition(
         rule_id="LLM05",
         name="Improper Output Handling",
-        status=Status.PLANNED,
+        status=Status.ACTIVE,
         default_severity=Severity.HIGH,
         description=(
             "LLM outputs are not validated before being used in downstream processing, "
-            "which can lead to code injection, XSS, or other attacks."
+            "which can lead to code injection, XSS, SQL injection, or other attacks."
         ),
         fix_suggestion=(
-            "Validate and sanitize all LLM outputs before using them in downstream processing."
+            "Validate and sanitise all LLM outputs before using them in downstream "
+            "processing. Never pass LLM output directly to eval(), exec(), shell "
+            "commands, SQL queries, or HTML rendering functions."
         ),
+        strict_severity=Severity.MEDIUM,
     )
 )
 
@@ -171,7 +174,7 @@ registry.register(
     RuleDefinition(
         rule_id="LLM08",
         name="Excessive Agency",
-        status=Status.PLANNED,
+        status=Status.ACTIVE,
         default_severity=Severity.HIGH,
         description=(
             "LLM agents granted excessive permissions or capabilities can cause unintended "
@@ -179,8 +182,10 @@ registry.register(
         ),
         fix_suggestion=(
             "Apply the principle of least privilege to all LLM agents and their tools. "
-            "Require human approval for high-impact actions."
+            "Use explicit tool allowlists, avoid wildcard access, and require human "
+            "approval for high-impact actions."
         ),
+        strict_severity=Severity.MEDIUM,
     )
 )
 

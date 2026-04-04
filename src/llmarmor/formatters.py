@@ -100,7 +100,9 @@ def _severity_sort_key(severity: str) -> int:
 _RULE_NAMES: dict[str, str] = {
     "LLM01": "Prompt Injection",
     "LLM02": "Sensitive Information Disclosure",
+    "LLM05": "Improper Output Handling",
     "LLM07": "System Prompt Leakage",
+    "LLM08": "Excessive Agency",
     "LLM10": "Unbounded Consumption",
 }
 

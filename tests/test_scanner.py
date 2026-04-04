@@ -1049,6 +1049,194 @@ msg = {"role": "system", "content": f"Help: {tainted_var}"}
         assert findings[0]["rule_id"] == "LLM02"
 
 
+# ---------------------------------------------------------------------------
+# LLM05 AST tests
+# ---------------------------------------------------------------------------
+
+
+class TestASTLLM05ImproperOutput:
+    """AST-layer tests for LLM05: Improper Output Handling."""
+
+    def _analyze(self, tmp_path: Path, code: str, strict: bool = False) -> dict:
+        from llmarmor.ast_analysis import analyze
+        return analyze(str(tmp_path / "app.py"), code, strict=strict)
+
+    def test_eval_tainted_variable_flagged_critical(self, tmp_path: Path):
+        """eval(user_input) where user_input is tainted must produce LLM05 CRITICAL."""
+        code = """\
+def process(user_input):
+    result = eval(user_input)
+    return result
+"""
+        result = self._analyze(tmp_path, code)
+        llm05 = [f for f in result["findings"] if f["rule_id"] == "LLM05"]
+        assert llm05, f"Expected LLM05 finding for eval(user_input); got: {result['findings']}"
+        assert any(f["severity"] == "CRITICAL" for f in llm05), (
+            f"eval(tainted) must be CRITICAL; got: {[f['severity'] for f in llm05]}"
+        )
+
+    def test_exec_tainted_variable_flagged_critical(self, tmp_path: Path):
+        """exec(data) where data is tainted must produce LLM05 CRITICAL."""
+        code = """\
+data = request.json["cmd"]
+exec(data)
+"""
+        result = self._analyze(tmp_path, code)
+        llm05 = [f for f in result["findings"] if f["rule_id"] == "LLM05"]
+        assert llm05, f"Expected LLM05 for exec(tainted); got: {result['findings']}"
+        assert any(f["severity"] == "CRITICAL" for f in llm05), (
+            f"exec(tainted) must be CRITICAL; got: {[f['severity'] for f in llm05]}"
+        )
+
+    def test_subprocess_run_tainted_flagged_critical(self, tmp_path: Path):
+        """subprocess.run(data) where data is tainted must produce LLM05 CRITICAL."""
+        code = """\
+import subprocess
+data = request.json["cmd"]
+subprocess.run(data, shell=True)
+"""
+        result = self._analyze(tmp_path, code)
+        llm05 = [f for f in result["findings"] if f["rule_id"] == "LLM05"]
+        assert llm05, f"Expected LLM05 for subprocess.run(tainted); got: {result['findings']}"
+        assert any(f["severity"] == "CRITICAL" for f in llm05), (
+            f"subprocess.run(tainted) must be CRITICAL; got: {[f['severity'] for f in llm05]}"
+        )
+
+    def test_markup_tainted_flagged_high(self, tmp_path: Path):
+        """Markup(text) where text is a function parameter must produce LLM05 HIGH."""
+        code = """\
+def render(text):
+    from markupsafe import Markup
+    return Markup(text)
+"""
+        result = self._analyze(tmp_path, code)
+        llm05 = [f for f in result["findings"] if f["rule_id"] == "LLM05"]
+        assert llm05, f"Expected LLM05 for Markup(tainted); got: {result['findings']}"
+        assert any(f["severity"] == "HIGH" for f in llm05), (
+            f"Markup(tainted) must be HIGH; got: {[f['severity'] for f in llm05]}"
+        )
+
+    def test_json_loads_tainted_info_in_normal_mode(self, tmp_path: Path):
+        """json.loads(content) where content is tainted must produce LLM05 INFO in normal mode."""
+        code = """\
+import json
+def process(content):
+    data = json.loads(content)
+    return data
+"""
+        result = self._analyze(tmp_path, code, strict=False)
+        llm05 = [f for f in result["findings"] if f["rule_id"] == "LLM05"]
+        assert llm05, f"Expected LLM05 for json.loads(tainted); got: {result['findings']}"
+        assert any(f["severity"] == "INFO" for f in llm05), (
+            f"json.loads(tainted) must be INFO in normal mode; got: {[f['severity'] for f in llm05]}"
+        )
+
+    def test_json_loads_tainted_medium_in_strict_mode(self, tmp_path: Path):
+        """json.loads(content) where content is tainted must produce LLM05 MEDIUM in strict mode."""
+        code = """\
+import json
+def process(content):
+    data = json.loads(content)
+    return data
+"""
+        result = self._analyze(tmp_path, code, strict=True)
+        llm05 = [f for f in result["findings"] if f["rule_id"] == "LLM05"]
+        assert llm05, f"Expected LLM05 for json.loads(tainted) in strict; got: {result['findings']}"
+        assert any(f["severity"] == "MEDIUM" for f in llm05), (
+            f"json.loads(tainted) must be MEDIUM in strict mode; got: {[f['severity'] for f in llm05]}"
+        )
+
+    def test_eval_tainted_clears_regex_line(self, tmp_path: Path):
+        """AST LLM05 finding must add (line, 'LLM05') to cleared to suppress regex duplicate."""
+        code = """\
+def process(user_input):
+    result = eval(user_input)
+    return result
+"""
+        result = self._analyze(tmp_path, code)
+        llm05_findings = [f for f in result["findings"] if f["rule_id"] == "LLM05"]
+        assert llm05_findings, "Expected at least one LLM05 finding"
+        for f in llm05_findings:
+            assert (f["line"], "LLM05") in result["cleared"], (
+                f"AST LLM05 finding on line {f['line']} should be in cleared set"
+            )
+
+    def test_safe_eval_call_not_tainted_not_flagged(self, tmp_path: Path):
+        """eval(literal_expr) where expr is a string literal must NOT produce LLM05."""
+        code = 'result = eval("1 + 2")\n'
+        result = self._analyze(tmp_path, code)
+        llm05 = [f for f in result["findings"] if f["rule_id"] == "LLM05"]
+        assert not llm05, (
+            f"eval() with string literal should not produce LLM05; got: {llm05}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# LLM08 AST tests
+# ---------------------------------------------------------------------------
+
+
+class TestASTLLM08ExcessiveAgency:
+    """AST-layer tests for LLM08: Excessive Agency."""
+
+    def _analyze(self, tmp_path: Path, code: str, strict: bool = False) -> dict:
+        from llmarmor.ast_analysis import analyze
+        return analyze(str(tmp_path / "app.py"), code, strict=strict)
+
+    def test_getattr_tainted_name_flagged_critical(self, tmp_path: Path):
+        """getattr(module, name)(args) where name is tainted must produce LLM08 CRITICAL."""
+        code = """\
+def dispatch(module, name, args):
+    return getattr(module, name)(args)
+"""
+        result = self._analyze(tmp_path, code)
+        llm08 = [f for f in result["findings"] if f["rule_id"] == "LLM08"]
+        assert llm08, (
+            f"Expected LLM08 for getattr(module, tainted_name)(); got: {result['findings']}"
+        )
+        assert any(f["severity"] == "CRITICAL" for f in llm08), (
+            f"getattr(module, tainted_name)() must be CRITICAL; got: {[f['severity'] for f in llm08]}"
+        )
+
+    def test_getattr_tainted_clears_regex_line(self, tmp_path: Path):
+        """AST LLM08 finding must add (line, 'LLM08') to cleared."""
+        code = """\
+def dispatch(module, name, args):
+    return getattr(module, name)(args)
+"""
+        result = self._analyze(tmp_path, code)
+        llm08_findings = [f for f in result["findings"] if f["rule_id"] == "LLM08"]
+        assert llm08_findings, "Expected at least one LLM08 finding"
+        for f in llm08_findings:
+            assert (f["line"], "LLM08") in result["cleared"], (
+                f"AST LLM08 finding on line {f['line']} should be in cleared set"
+            )
+
+    def test_globals_tainted_dispatch_flagged_critical(self, tmp_path: Path):
+        """globals()[tainted_name]() must produce LLM08 CRITICAL."""
+        code = """\
+def execute(fn_name):
+    return globals()[fn_name]()
+"""
+        result = self._analyze(tmp_path, code)
+        llm08 = [f for f in result["findings"] if f["rule_id"] == "LLM08"]
+        assert llm08, (
+            f"Expected LLM08 for globals()[tainted_name](); got: {result['findings']}"
+        )
+        assert any(f["severity"] == "CRITICAL" for f in llm08), (
+            f"globals()[tainted_name]() must be CRITICAL; got: {[f['severity'] for f in llm08]}"
+        )
+
+    def test_getattr_with_string_literal_not_flagged(self, tmp_path: Path):
+        """getattr(obj, 'fixed_method')() must NOT produce LLM08 (safe static dispatch)."""
+        code = 'result = getattr(obj, "fixed_method")()\n'
+        result = self._analyze(tmp_path, code)
+        llm08 = [f for f in result["findings"] if f["rule_id"] == "LLM08"]
+        assert not llm08, (
+            f"getattr with string literal must not be flagged; got: {llm08}"
+        )
+
+
 class TestSystemPromptLeak:
     VULNERABLE_CODE = (
         'SYSTEM_PROMPT = "You are a helpful customer service assistant for Acme Corp. '
@@ -1815,15 +2003,15 @@ class TestRegistry:
         """active_rules() must only return ACTIVE rules."""
         from llmarmor.registry import registry, Status
         active = registry.active_rules()
-        assert len(active) == 4, f"Expected 4 active rules; got {len(active)}"
+        assert len(active) == 6, f"Expected 6 active rules; got {len(active)}"
         for r in active:
             assert r.status == Status.ACTIVE, f"{r.rule_id} should be ACTIVE"
 
     def test_active_rule_ids(self):
-        """active_rules() must include LLM01, LLM02, LLM07, LLM10."""
+        """active_rules() must include LLM01, LLM02, LLM05, LLM07, LLM08, LLM10."""
         from llmarmor.registry import registry
         ids = {r.rule_id for r in registry.active_rules()}
-        assert ids == {"LLM01", "LLM02", "LLM07", "LLM10"}
+        assert ids == {"LLM01", "LLM02", "LLM05", "LLM07", "LLM08", "LLM10"}
 
     def test_all_rules_count(self):
         """all_rules() must return all 10 OWASP LLM rules."""
@@ -1831,10 +2019,10 @@ class TestRegistry:
         assert len(registry.all_rules()) == 10
 
     def test_by_status_planned(self):
-        """by_status(PLANNED) must return exactly LLM05 and LLM08."""
+        """by_status(PLANNED) must return no rules (LLM05 and LLM08 are now ACTIVE)."""
         from llmarmor.registry import registry, Status
         planned = {r.rule_id for r in registry.by_status(Status.PLANNED)}
-        assert planned == {"LLM05", "LLM08"}
+        assert planned == set()
 
     def test_by_status_out_of_scope(self):
         """by_status(OUT_OF_SCOPE) must return LLM03, LLM04, LLM06, LLM09."""
