@@ -1237,7 +1237,7 @@ def execute(fn_name):
         )
 
 
-
+class TestSystemPromptLeak:
     VULNERABLE_CODE = (
         'SYSTEM_PROMPT = "You are a helpful customer service assistant for Acme Corp. '
         'You have access to customer databases and can process refunds up to $500."'

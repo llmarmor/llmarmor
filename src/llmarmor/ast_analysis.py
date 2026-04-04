@@ -688,19 +688,14 @@ class _Analyzer(ast.NodeVisitor):
         """
         func = node.func
 
-        # getattr(obj, tainted_name) — the call node IS the getattr call itself;
-        # we detect when it is used as a callable (i.e. getattr(...)(...))
-        # by checking whether the *parent* call's func is this node.
-        # At visit_Call time, node is the *outer* call: node.func is the getattr call.
+        # getattr(obj, tainted_name)(args) — node.func is the inner getattr() call.
         if isinstance(func, ast.Call):
-            inner = func
-            inner_func = inner.func
-            # getattr(module, tainted_name)
+            inner_func = func.func
             if (
                 isinstance(inner_func, ast.Name)
                 and inner_func.id == "getattr"
-                and len(inner.args) >= 2
-                and self._is_tainted_node(inner.args[1])
+                and len(func.args) >= 2
+                and self._is_tainted_node(func.args[1])
             ):
                 self.findings.append(
                     _finding(
@@ -723,38 +718,7 @@ class _Analyzer(ast.NodeVisitor):
                 self.cleared.add((node.lineno, _LLM08))
                 return True
 
-            # globals()[tainted_name]()
-            # node.func is a Subscript: globals()[tainted_name]
-            if isinstance(func, ast.Subscript):
-                subscript_val = func.value
-                if (
-                    isinstance(subscript_val, ast.Call)
-                    and isinstance(subscript_val.func, ast.Name)
-                    and subscript_val.func.id == "globals"
-                    and self._is_tainted_node(func.slice)
-                ):
-                    self.findings.append(
-                        _finding(
-                            _LLM08,
-                            "Excessive Agency",
-                            "CRITICAL",
-                            self.filepath,
-                            node.lineno,
-                            (
-                                "globals() is subscripted with a tainted key and the "
-                                "result is called. An attacker can invoke any function "
-                                "in the module namespace."
-                            ),
-                            (
-                                "Use an explicit allowlist instead of globals() dispatch: "
-                                "`ALLOWED = {'fn': fn}; ALLOWED[name]()`."
-                            ),
-                        )
-                    )
-                    self.cleared.add((node.lineno, _LLM08))
-                    return True
-
-        # globals()[tainted_name]() — node.func is the Subscript directly
+        # globals()[tainted_name]() — node.func is a Subscript: globals()[tainted_name].
         if isinstance(func, ast.Subscript):
             subscript_val = func.value
             if (
