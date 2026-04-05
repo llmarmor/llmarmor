@@ -5,6 +5,7 @@ Supported formats:
 - ``flat``: one line per finding (legacy format)
 - ``json``: grouped JSON with ``meta`` and ``findings`` blocks
 - ``md`` / ``markdown``: Markdown report
+- ``sarif``: SARIF 2.1.0 format for GitHub Code Scanning and security dashboards
 """
 
 import json
@@ -141,10 +142,19 @@ def format_grouped(findings: Sequence[dict], console: Console, scan_path: str) -
         if description:
             console.print(f"{description}\n")
 
-        # Locations
+        # Locations — show per-finding severity annotation when the group contains
+        # mixed severities so the summary line always matches what is visible.
+        mixed_severities = len({f["severity"] for f in group}) > 1
         for f in sorted(group, key=lambda x: (x["filepath"], x["line"])):
             fp = truncate_path(f["filepath"])
-            console.print(f"  [cyan]→[/cyan] {fp}:{f['line']}")
+            if mixed_severities and f["severity"] != worst_sev:
+                sev_color = _SEVERITY_COLORS.get(f["severity"], "white")
+                console.print(
+                    f"  [cyan]→[/cyan] {fp}:{f['line']} "
+                    f"([{sev_color}]{f['severity']}[/{sev_color}])"
+                )
+            else:
+                console.print(f"  [cyan]→[/cyan] {fp}:{f['line']}")
 
         # Fix suggestion (first non-empty one).
         fix = next((f.get("fix_suggestion") for f in group if f.get("fix_suggestion")), None)
@@ -332,6 +342,115 @@ def format_markdown(
 
 
 # ---------------------------------------------------------------------------
+# SARIF 2.1.0 format
+# ---------------------------------------------------------------------------
+
+# SARIF severity level mapping (SARIF 2.1.0 §3.27.10)
+_SARIF_LEVEL: dict[str, str] = {
+    "CRITICAL": "error",
+    "HIGH": "error",
+    "MEDIUM": "warning",
+    "LOW": "note",
+    "INFO": "note",
+}
+
+_OWASP_HELP_URI = (
+    "https://owasp.org/www-project-top-10-for-large-language-model-applications/"
+)
+
+
+def format_sarif(
+    findings: Sequence[dict],
+    console: Console,
+    scan_path: str,
+    mode: str = "normal",
+) -> None:
+    """Print findings in SARIF 2.1.0 format to stdout.
+
+    The output is suitable for GitHub Code Scanning, VS Code SARIF Viewer,
+    and any tool that consumes the SARIF standard.
+
+    Severity mapping:
+    - CRITICAL / HIGH → error
+    - MEDIUM → warning
+    - LOW / INFO → note
+    """
+    # Build the rules array from unique rule IDs encountered in findings.
+    rules_seen: dict[str, dict] = {}
+    for f in findings:
+        rule_id = f["rule_id"]
+        if rule_id not in rules_seen:
+            short_desc = f.get("description", "")
+            # Truncate to a reasonable length for the short description.
+            if len(short_desc) > 120:
+                short_desc = short_desc[:117] + "..."
+            rules_seen[rule_id] = {
+                "id": rule_id,
+                "name": f.get("rule_name", rule_id),
+                "shortDescription": {"text": short_desc or rule_id},
+                "fullDescription": {"text": f.get("description", "")},
+                "helpUri": _OWASP_HELP_URI,
+                "defaultConfiguration": {
+                    "level": _SARIF_LEVEL.get(f["severity"], "warning"),
+                },
+                "properties": {
+                    "tags": ["security", "llm", f["rule_id"].lower()],
+                },
+            }
+
+    results = []
+    for f in findings:
+        fix = f.get("fix_suggestion", "")
+        result: dict = {
+            "ruleId": f["rule_id"],
+            "level": _SARIF_LEVEL.get(f["severity"], "warning"),
+            "message": {"text": f.get("description", "")},
+            "locations": [
+                {
+                    "physicalLocation": {
+                        "artifactLocation": {
+                            "uri": f.get("filepath", ""),
+                            "uriBaseId": "%SRCROOT%",
+                        },
+                        "region": {
+                            "startLine": max(1, f.get("line", 1)),
+                        },
+                    },
+                }
+            ],
+        }
+        if fix:
+            result["fixes"] = [{"description": {"text": fix}}]
+        results.append(result)
+
+    sarif_output = {
+        "$schema": (
+            "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/"
+            "Schemata/sarif-schema-2.1.0.json"
+        ),
+        "version": "2.1.0",
+        "runs": [
+            {
+                "tool": {
+                    "driver": {
+                        "name": "LLM Armor",
+                        "version": __version__,
+                        "informationUri": "https://llmarmor.dev",
+                        "rules": list(rules_seen.values()),
+                    }
+                },
+                "originalUriBaseIds": {
+                    "%SRCROOT%": {"uri": f"file:///{scan_path}/"},
+                },
+                "results": results,
+            }
+        ],
+    }
+
+    print(json.dumps(sarif_output, indent=2))
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
 
@@ -341,6 +460,7 @@ _FORMATS = {
     "json": format_json,
     "md": format_markdown,
     "markdown": format_markdown,
+    "sarif": format_sarif,
 }
 
 VALID_FORMATS = list(_FORMATS.keys())
@@ -377,8 +497,8 @@ def render(
     if not verbose:
         findings = [f for f in findings if f["severity"] not in _HIDDEN_IN_NORMAL]
 
-    # JSON and Markdown formatters accept an extra ``mode`` kwarg.
-    if fmt in ("json", "md", "markdown"):
+    # JSON, Markdown, and SARIF formatters accept an extra ``mode`` kwarg.
+    if fmt in ("json", "md", "markdown", "sarif"):
         formatter(findings, console, scan_path, mode=mode)  # type: ignore[call-arg]
     else:
         formatter(findings, console, scan_path)

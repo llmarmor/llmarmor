@@ -4,7 +4,9 @@ import re
 
 RULE_ID = "LLM01"
 RULE_NAME = "Prompt Injection"
-SEVERITY = "CRITICAL"
+# Regex-only detection (without AST-confirmed taint): HIGH confidence but not
+# confirmed. AST-confirmed findings (system-role f-string injection) remain CRITICAL.
+SEVERITY = "HIGH"
 
 _USER_INPUT_ALT = (
     r"user_input|user_message|user_query|user_text|user_prompt|"

@@ -72,7 +72,7 @@ messages=[
         findings = check_prompt_injection(tmp_path / "vuln.py", self.VULNERABLE_CODE)
         assert len(findings) >= 1
         assert findings[0]["rule_id"] == "LLM01"
-        assert findings[0]["severity"] == "CRITICAL"
+        assert findings[0]["severity"] == "HIGH"
 
     def test_no_finding_on_safe_code(self, tmp_path: Path):
         findings = check_prompt_injection(tmp_path / "safe.py", self.SAFE_CODE)
@@ -93,7 +93,7 @@ messages=[
         findings = check_prompt_injection(tmp_path / "vuln.py", self.CONCAT_VULNERABLE_CODE)
         assert len(findings) >= 1
         assert findings[0]["rule_id"] == "LLM01"
-        assert findings[0]["severity"] == "CRITICAL"
+        assert findings[0]["severity"] == "HIGH"
 
     def test_detects_triple_quoted_fstring(self, tmp_path: Path):
         """Triple-quoted f-strings with user input near prompt context must be flagged."""
@@ -2205,15 +2205,15 @@ class TestRegistry:
         """active_rules() must only return ACTIVE rules."""
         from llmarmor.registry import registry, Status
         active = registry.active_rules()
-        assert len(active) == 6, f"Expected 6 active rules; got {len(active)}"
+        assert len(active) == 7, f"Expected 7 active rules; got {len(active)}"
         for r in active:
             assert r.status == Status.ACTIVE, f"{r.rule_id} should be ACTIVE"
 
     def test_active_rule_ids(self):
-        """active_rules() must include LLM01, LLM02, LLM05, LLM07, LLM08, LLM10."""
+        """active_rules() must include LLM01, LLM02, LLM05, LLM06, LLM07, LLM08, LLM10."""
         from llmarmor.registry import registry
         ids = {r.rule_id for r in registry.active_rules()}
-        assert ids == {"LLM01", "LLM02", "LLM05", "LLM07", "LLM08", "LLM10"}
+        assert ids == {"LLM01", "LLM02", "LLM05", "LLM06", "LLM07", "LLM08", "LLM10"}
 
     def test_all_rules_count(self):
         """all_rules() must return all 10 OWASP LLM rules."""
@@ -2227,10 +2227,10 @@ class TestRegistry:
         assert planned == set()
 
     def test_by_status_out_of_scope(self):
-        """by_status(OUT_OF_SCOPE) must return LLM03, LLM04, LLM06, LLM09."""
+        """by_status(OUT_OF_SCOPE) must return LLM03, LLM04, LLM09 (LLM06 is now ACTIVE)."""
         from llmarmor.registry import registry, Status
         oos = {r.rule_id for r in registry.by_status(Status.OUT_OF_SCOPE)}
-        assert oos == {"LLM03", "LLM04", "LLM06", "LLM09"}
+        assert oos == {"LLM03", "LLM04", "LLM09"}
 
     def test_rule_has_required_fields(self):
         """Every registered rule must have non-empty rule_id, name, description, fix."""
@@ -3052,3 +3052,403 @@ SYSTEM_PROMPT = (
         assert strict_llm07[0]["severity"] == "MEDIUM", (
             f"Strict mode should promote to MEDIUM; got: {strict_llm07[0]['severity']}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Tests for new v0.5.0 features
+# ---------------------------------------------------------------------------
+
+
+class TestInlineSuppression:
+    """Tests for inline # llmarmor: ignore suppression comments."""
+
+    def test_bare_ignore_suppresses_all_rules(self, tmp_path: Path):
+        """# llmarmor: ignore on the same line suppresses all rule findings."""
+        from llmarmor.scanner import _is_suppressed
+
+        lines = ['result = eval(user_input)  # llmarmor: ignore']
+        assert _is_suppressed(lines, 1, "LLM05"), "Bare ignore should suppress LLM05"
+        assert _is_suppressed(lines, 1, "LLM01"), "Bare ignore should suppress LLM01"
+
+    def test_rule_scoped_ignore_suppresses_only_named_rule(self, tmp_path: Path):
+        """# llmarmor: ignore[LLM05] suppresses only LLM05, not LLM01."""
+        from llmarmor.scanner import _is_suppressed
+
+        lines = ['result = eval(user_input)  # llmarmor: ignore[LLM05]']
+        assert _is_suppressed(lines, 1, "LLM05"), "Scoped ignore should suppress LLM05"
+        assert not _is_suppressed(lines, 1, "LLM01"), "Scoped ignore must not suppress LLM01"
+
+    def test_ignore_on_preceding_line(self, tmp_path: Path):
+        """# llmarmor: ignore on the line above suppresses the finding below."""
+        from llmarmor.scanner import _is_suppressed
+
+        lines = [
+            '# llmarmor: ignore',
+            'result = eval(user_input)',
+        ]
+        # Finding is on line 2 (1-indexed)
+        assert _is_suppressed(lines, 2, "LLM05"), "Ignore on preceding line should suppress"
+
+    def test_multi_rule_scoped_ignore(self, tmp_path: Path):
+        """# llmarmor: ignore[LLM01,LLM05] suppresses both rules."""
+        from llmarmor.scanner import _is_suppressed
+
+        lines = ['x = eval(f"cmd: {user_input}")  # llmarmor: ignore[LLM01,LLM05]']
+        assert _is_suppressed(lines, 1, "LLM01"), "Multi-rule ignore should suppress LLM01"
+        assert _is_suppressed(lines, 1, "LLM05"), "Multi-rule ignore should suppress LLM05"
+        assert not _is_suppressed(lines, 1, "LLM08"), "Multi-rule ignore must not suppress LLM08"
+
+    def test_suppressed_finding_absent_from_scan_results(self, tmp_path: Path):
+        """Inline suppression must remove findings from run_scan() output."""
+        from llmarmor.scanner import run_scan
+
+        code = (
+            'messages=[\n'
+            '    {"role": "system", "content": f"Help: {user_input}"},  # llmarmor: ignore[LLM01]\n'
+            ']\n'
+        )
+        py_file = tmp_path / "app.py"
+        py_file.write_text(code)
+        findings = run_scan(str(tmp_path))
+        llm01 = [f for f in findings if f["rule_id"] == "LLM01"]
+        assert llm01 == [], f"Suppressed LLM01 should not appear in results; got: {llm01}"
+
+
+class TestLLMArmorIgnore:
+    """Tests for .llmarmorignore file support."""
+
+    def test_ignored_file_produces_no_findings(self, tmp_path: Path):
+        """A file matched by .llmarmorignore must not be scanned."""
+        from llmarmor.scanner import run_scan
+
+        (tmp_path / ".llmarmorignore").write_text("vuln.py\n")
+        code = (
+            'messages=[{"role": "system", "content": f"Help: {user_input}"}]\n'
+        )
+        (tmp_path / "vuln.py").write_text(code)
+        findings = run_scan(str(tmp_path))
+        assert findings == [], f"Ignored file must not produce findings; got: {findings}"
+
+    def test_non_ignored_file_still_scanned(self, tmp_path: Path):
+        """Files not matching .llmarmorignore must still be scanned."""
+        from llmarmor.scanner import run_scan
+
+        (tmp_path / ".llmarmorignore").write_text("other.py\n")
+        code = (
+            'messages=[{"role": "user", "content": f"Help: {user_input}"}]\n'
+        )
+        (tmp_path / "app.py").write_text(code)
+        findings = run_scan(str(tmp_path))
+        assert findings, "Non-ignored file should still produce findings"
+
+    def test_glob_pattern_ignores_directory(self, tmp_path: Path):
+        """Glob patterns matching directories must suppress all files inside."""
+        from llmarmor.scanner import run_scan
+
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        (tmp_path / ".llmarmorignore").write_text("tests/**\n")
+        code = (
+            'messages=[{"role": "system", "content": f"Help: {user_input}"}]\n'
+        )
+        (tests_dir / "fixture.py").write_text(code)
+        findings = run_scan(str(tmp_path))
+        assert findings == [], f"Files in ignored directory must not be scanned; got: {findings}"
+
+    def test_ignore_patterns_loaded_correctly(self, tmp_path: Path):
+        """_load_ignore_patterns must read non-comment, non-empty lines."""
+        from llmarmor.scanner import _load_ignore_patterns
+
+        (tmp_path / ".llmarmorignore").write_text(
+            "# This is a comment\n"
+            "\n"
+            "tests/**\n"
+            "scripts/dev_*\n"
+        )
+        patterns = _load_ignore_patterns(tmp_path)
+        assert patterns == ["tests/**", "scripts/dev_*"], f"Got: {patterns}"
+
+
+class TestConfigFile:
+    """Tests for .llmarmor.yaml configuration file support."""
+
+    def test_load_config_returns_none_when_no_file(self, tmp_path: Path):
+        """load_config must return None when no config file exists."""
+        from llmarmor.config import load_config
+
+        cfg = load_config(scan_root=str(tmp_path))
+        assert cfg is None, f"Expected None; got: {cfg}"
+
+    def test_load_config_from_explicit_path(self, tmp_path: Path):
+        """load_config must load from an explicit config_path."""
+        from llmarmor.config import load_config
+
+        config_file = tmp_path / "my_config.yaml"
+        config_file.write_text("strict: true\nseverity_threshold: HIGH\n")
+        cfg = load_config(config_path=str(config_file))
+        assert cfg is not None
+        assert cfg.strict is True
+        assert cfg.severity_threshold == "HIGH"
+
+    def test_load_config_auto_detects_in_scan_root(self, tmp_path: Path):
+        """load_config must auto-detect .llmarmor.yaml in the scan root."""
+        from llmarmor.config import load_config
+
+        (tmp_path / ".llmarmor.yaml").write_text("strict: false\n")
+        cfg = load_config(scan_root=str(tmp_path))
+        assert cfg is not None
+        assert cfg.strict is False
+
+    def test_config_rule_disabled(self, tmp_path: Path):
+        """is_rule_enabled must return False for a disabled rule."""
+        from llmarmor.config import LLMArmorConfig
+
+        cfg = LLMArmorConfig({"rules": {"LLM07": {"enabled": False}}})
+        assert not cfg.is_rule_enabled("LLM07"), "LLM07 should be disabled"
+        assert cfg.is_rule_enabled("LLM01"), "LLM01 should default to enabled"
+
+    def test_config_severity_override(self, tmp_path: Path):
+        """rule_severity_override must return the configured severity."""
+        from llmarmor.config import LLMArmorConfig
+
+        cfg = LLMArmorConfig({"rules": {"LLM01": {"severity": "MEDIUM"}}})
+        assert cfg.rule_severity_override("LLM01") == "MEDIUM"
+        assert cfg.rule_severity_override("LLM07") is None
+
+    def test_config_disabled_rule_excluded_from_scan(self, tmp_path: Path):
+        """A disabled rule must not appear in run_scan() results."""
+        from llmarmor.config import LLMArmorConfig
+        from llmarmor.scanner import run_scan
+
+        code = (
+            'OPENAI_API_KEY = "sk-proj-abc123def456ghi789jkl012mno345pqr678stu"\n'
+        )
+        (tmp_path / "app.py").write_text(code)
+        cfg = LLMArmorConfig({"rules": {"LLM02": {"enabled": False}}})
+        findings = run_scan(str(tmp_path), config=cfg)
+        llm02 = [f for f in findings if f["rule_id"] == "LLM02"]
+        assert llm02 == [], f"Disabled rule LLM02 must not appear; got: {llm02}"
+
+    def test_config_severity_override_applied_in_scan(self, tmp_path: Path):
+        """A severity override in config must change the finding's severity."""
+        from llmarmor.config import LLMArmorConfig
+        from llmarmor.scanner import run_scan
+
+        code = (
+            'OPENAI_API_KEY = "sk-proj-abc123def456ghi789jkl012mno345pqr678stu"\n'
+        )
+        (tmp_path / "app.py").write_text(code)
+        cfg = LLMArmorConfig({"rules": {"LLM02": {"severity": "HIGH"}}})
+        findings = run_scan(str(tmp_path), config=cfg)
+        llm02 = [f for f in findings if f["rule_id"] == "LLM02"]
+        assert llm02, "LLM02 should still appear with overridden severity"
+        assert llm02[0]["severity"] == "HIGH", f"Expected HIGH; got: {llm02[0]['severity']}"
+
+
+class TestExitCodes:
+    """Tests for _compute_exit_code in cli.py."""
+
+    def test_exit_code_0_for_no_findings(self):
+        from llmarmor.cli import _compute_exit_code
+
+        assert _compute_exit_code([]) == 0
+
+    def test_exit_code_0_for_info_only(self):
+        from llmarmor.cli import _compute_exit_code
+
+        findings = [{"severity": "INFO"}, {"severity": "LOW"}]
+        assert _compute_exit_code(findings) == 0
+
+    def test_exit_code_1_for_medium(self):
+        from llmarmor.cli import _compute_exit_code
+
+        findings = [{"severity": "MEDIUM"}]
+        assert _compute_exit_code(findings) == 1
+
+    def test_exit_code_1_for_high(self):
+        from llmarmor.cli import _compute_exit_code
+
+        findings = [{"severity": "HIGH"}]
+        assert _compute_exit_code(findings) == 1
+
+    def test_exit_code_2_for_critical(self):
+        from llmarmor.cli import _compute_exit_code
+
+        findings = [{"severity": "CRITICAL"}, {"severity": "MEDIUM"}]
+        assert _compute_exit_code(findings) == 2
+
+
+class TestSARIFFormat:
+    """Tests for SARIF 2.1.0 output format."""
+
+    _SAMPLE_FINDINGS = [
+        {
+            "rule_id": "LLM01",
+            "rule_name": "Prompt Injection",
+            "severity": "HIGH",
+            "filepath": "app/chat.py",
+            "line": 42,
+            "description": "User input interpolated into prompt.",
+            "fix_suggestion": "Pass as separate user message.",
+        },
+        {
+            "rule_id": "LLM02",
+            "rule_name": "Sensitive Info Disclosure",
+            "severity": "CRITICAL",
+            "filepath": "app/config.py",
+            "line": 5,
+            "description": "Hardcoded API key.",
+            "fix_suggestion": "Use env vars.",
+        },
+    ]
+
+    def test_sarif_output_is_valid_json(self, capsys):
+        import json as _json
+        from io import StringIO
+        from rich.console import Console
+        from llmarmor.formatters import render
+
+        console = Console(file=StringIO(), width=120)
+        render(self._SAMPLE_FINDINGS, fmt="sarif", console=console, scan_path="/app", verbose=True)
+        output = capsys.readouterr().out
+        parsed = _json.loads(output)
+        assert parsed["version"] == "2.1.0"
+        assert "$schema" in parsed
+
+    def test_sarif_has_correct_schema(self, capsys):
+        import json as _json
+        from io import StringIO
+        from rich.console import Console
+        from llmarmor.formatters import render
+
+        console = Console(file=StringIO(), width=120)
+        render(self._SAMPLE_FINDINGS, fmt="sarif", console=console, scan_path="/app", verbose=True)
+        parsed = _json.loads(capsys.readouterr().out)
+        assert "sarif-schema-2.1.0" in parsed["$schema"]
+
+    def test_sarif_severity_mapping(self, capsys):
+        import json as _json
+        from io import StringIO
+        from rich.console import Console
+        from llmarmor.formatters import render
+
+        console = Console(file=StringIO(), width=120)
+        render(self._SAMPLE_FINDINGS, fmt="sarif", console=console, scan_path="/app", verbose=True)
+        parsed = _json.loads(capsys.readouterr().out)
+        results = parsed["runs"][0]["results"]
+
+        # HIGH → error, CRITICAL → error
+        levels = {r["ruleId"]: r["level"] for r in results}
+        assert levels["LLM01"] == "error", "HIGH should map to error"
+        assert levels["LLM02"] == "error", "CRITICAL should map to error"
+
+    def test_sarif_filters_info_when_not_verbose(self, capsys):
+        import json as _json
+        from io import StringIO
+        from rich.console import Console
+        from llmarmor.formatters import render
+
+        findings = [
+            {
+                "rule_id": "LLM07",
+                "rule_name": "System Prompt Leakage",
+                "severity": "INFO",
+                "filepath": "app.py",
+                "line": 1,
+                "description": "Hardcoded system prompt.",
+                "fix_suggestion": "Use env vars.",
+            }
+        ]
+        console = Console(file=StringIO(), width=120)
+        render(findings, fmt="sarif", console=console, scan_path="/app", verbose=False)
+        parsed = _json.loads(capsys.readouterr().out)
+        results = parsed["runs"][0]["results"]
+        assert results == [], "INFO findings must be filtered in non-verbose SARIF output"
+
+    def test_sarif_tool_name_and_version(self, capsys):
+        import json as _json
+        from io import StringIO
+        from rich.console import Console
+        from llmarmor.formatters import render
+        from llmarmor import __version__
+
+        console = Console(file=StringIO(), width=120)
+        render(self._SAMPLE_FINDINGS, fmt="sarif", console=console, scan_path="/app", verbose=True)
+        parsed = _json.loads(capsys.readouterr().out)
+        driver = parsed["runs"][0]["tool"]["driver"]
+        assert driver["name"] == "LLM Armor"
+        assert driver["version"] == __version__
+
+
+class TestGroupedFormatMixedSeverity:
+    """Tests for per-location severity annotation in mixed-severity rule groups."""
+
+    def test_mixed_severity_group_shows_annotation(self):
+        """When a rule group has mixed severities, lower-severity locations must be annotated."""
+        import io
+        from rich.console import Console
+        from llmarmor.formatters import render
+
+        findings = [
+            {
+                "rule_id": "LLM01",
+                "rule_name": "Prompt Injection",
+                "severity": "HIGH",
+                "filepath": "app.py",
+                "line": 10,
+                "description": "High severity finding.",
+                "fix_suggestion": "Fix it.",
+            },
+            {
+                "rule_id": "LLM01",
+                "rule_name": "Prompt Injection",
+                "severity": "INFO",
+                "filepath": "app.py",
+                "line": 20,
+                "description": "Info severity finding.",
+                "fix_suggestion": "Fix it.",
+            },
+        ]
+        buf = io.StringIO()
+        console = Console(file=buf, highlight=False)
+        render(findings, fmt="grouped", console=console, scan_path=".", verbose=True)
+        output = buf.getvalue()
+        # The INFO location must have a severity annotation
+        assert "(INFO)" in output, f"INFO location must be annotated; got:\n{output}"
+
+    def test_uniform_severity_group_shows_no_annotation(self):
+        """When all findings in a group have the same severity, no annotation is shown."""
+        import io
+        from rich.console import Console
+        from llmarmor.formatters import render
+
+        findings = [
+            {
+                "rule_id": "LLM01",
+                "rule_name": "Prompt Injection",
+                "severity": "HIGH",
+                "filepath": "app.py",
+                "line": 10,
+                "description": "Finding.",
+                "fix_suggestion": "Fix.",
+            },
+            {
+                "rule_id": "LLM01",
+                "rule_name": "Prompt Injection",
+                "severity": "HIGH",
+                "filepath": "app.py",
+                "line": 20,
+                "description": "Finding.",
+                "fix_suggestion": "Fix.",
+            },
+        ]
+        buf = io.StringIO()
+        console = Console(file=buf, highlight=False)
+        render(findings, fmt="grouped", console=console, scan_path=".", verbose=True)
+        output = buf.getvalue()
+        # Lines should not have severity annotations since they're uniform
+        for line in output.splitlines():
+            if "app.py:" in line:
+                assert "(HIGH)" not in line, (
+                    f"Uniform-severity group must not annotate locations; got: {line}"
+                )

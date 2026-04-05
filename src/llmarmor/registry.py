@@ -81,15 +81,18 @@ registry.register(
         rule_id="LLM01",
         name="Prompt Injection",
         status=Status.ACTIVE,
-        default_severity=Severity.CRITICAL,
+        default_severity=Severity.HIGH,
         description=(
-            "Prompt injection occurs when user-controlled input is mixed into LLM prompts, "
-            "potentially allowing attackers to override system instructions or extract "
-            "sensitive information."
+            "User-controlled input is mixed into LLM prompt strings, allowing attackers "
+            "to override system instructions, extract sensitive data, or hijack the "
+            "model's behavior. Detection based on variable naming convention — verify "
+            "that the flagged variable actually carries user-supplied data."
         ),
         fix_suggestion=(
             "Pass user input as a separate 'role: user' message without interpolation. "
-            "Validate and sanitize all user inputs before including them in prompts."
+            "Never use f-strings, .format(), or concatenation to embed user data in "
+            "system or assistant messages. If a prompt template is required, use a "
+            "dedicated library with injection-safe variable substitution."
         ),
         strict_severity=Severity.MEDIUM,
     )
@@ -102,12 +105,16 @@ registry.register(
         status=Status.ACTIVE,
         default_severity=Severity.CRITICAL,
         description=(
-            "Hardcoded API keys, tokens, or other secrets in source code can be exposed "
-            "through version control, logs, or code sharing."
+            "Hardcoded API keys or tokens found in source code. These secrets are exposed "
+            "to anyone with repository access and will be captured by version control "
+            "history even after removal. An attacker with the key can make authenticated "
+            "API calls, incur costs, or exfiltrate data."
         ),
         fix_suggestion=(
-            "Never hardcode API keys in source code. Use environment variables or a "
-            "secrets manager for production deployments."
+            "Remove the hardcoded secret immediately and rotate it. Store secrets in "
+            "environment variables and read them with os.environ.get('KEY_NAME'). "
+            "For production, use a secrets manager (AWS Secrets Manager, HashiCorp Vault, "
+            "or similar). Add secret patterns to .gitignore and pre-commit hooks."
         ),
     )
 )
@@ -119,12 +126,16 @@ registry.register(
         status=Status.ACTIVE,
         default_severity=Severity.INFO,
         description=(
-            "Hardcoded system prompts in source code are visible to anyone with repository "
-            "access and may expose proprietary instructions or internal tool descriptions."
+            "A hardcoded system prompt was found in source code. Anyone with repository "
+            "access can read the prompt, potentially revealing proprietary instructions, "
+            "personas, tool descriptions, or information about internal systems that "
+            "should remain confidential."
         ),
         fix_suggestion=(
-            "Load system prompts from environment variables or a secure configuration store "
-            "rather than hardcoding them in source files."
+            "Load the system prompt from an environment variable or a secure configuration "
+            "store at runtime rather than embedding it in source code. Example: "
+            "system_prompt = os.environ.get('SYSTEM_PROMPT', ''). This keeps proprietary "
+            "instructions out of version control."
         ),
         strict_severity=Severity.MEDIUM,
     )
@@ -137,12 +148,15 @@ registry.register(
         status=Status.ACTIVE,
         default_severity=Severity.MEDIUM,
         description=(
-            "LLM API calls without token limits can lead to unexpectedly large responses, "
-            "higher-than-expected costs, and potential denial of service."
+            "LLM API call without a max_tokens limit. Without this guard, a single request "
+            "can generate thousands of tokens, leading to unexpectedly large costs, "
+            "slow response times, and potential denial-of-service when processing many "
+            "requests concurrently."
         ),
         fix_suggestion=(
-            "Always set max_tokens (or equivalent) on LLM API calls. Consider adding "
-            "per-user rate limits and request timeouts."
+            "Always set max_tokens (or max_output_tokens for Gemini) on every LLM API call. "
+            "Example: client.chat.completions.create(..., max_tokens=500). Also consider "
+            "adding per-user rate limits and request timeouts for production deployments."
         ),
     )
 )
@@ -158,13 +172,17 @@ registry.register(
         status=Status.ACTIVE,
         default_severity=Severity.HIGH,
         description=(
-            "LLM outputs are not validated before being used in downstream processing, "
-            "which can lead to code injection, XSS, SQL injection, or other attacks."
+            "LLM output is passed directly to a dangerous sink (eval, exec, shell command, "
+            "SQL query, or HTML renderer) without validation. An attacker who can influence "
+            "the model's output can execute arbitrary code, run shell commands, or inject "
+            "malicious SQL/HTML. Detection based on variable naming convention — verify "
+            "that the flagged variable actually carries LLM-generated content."
         ),
         fix_suggestion=(
-            "Validate and sanitise all LLM outputs before using them in downstream "
-            "processing. Never pass LLM output directly to eval(), exec(), shell "
-            "commands, SQL queries, or HTML rendering functions."
+            "Never pass LLM output directly to eval(), exec(), subprocess, SQL queries, or "
+            "HTML rendering functions. Validate and sanitize all model responses before use. "
+            "For code execution use cases, run in a sandboxed environment (e.g., Docker, "
+            "subprocess with a restricted user). For SQL, use parameterized queries."
         ),
         strict_severity=Severity.MEDIUM,
     )
@@ -177,13 +195,18 @@ registry.register(
         status=Status.ACTIVE,
         default_severity=Severity.HIGH,
         description=(
-            "LLM agents granted excessive permissions or capabilities can cause unintended "
-            "harm by taking actions beyond what is necessary."
+            "LLM agent is granted capabilities beyond what is necessary for its task. "
+            "Overly broad tool access, dynamic function dispatch, or disabled human "
+            "oversight gates allow an attacker who controls the model's input or output "
+            "to trigger dangerous actions (file deletion, shell commands, arbitrary "
+            "code execution) without human review."
         ),
         fix_suggestion=(
-            "Apply the principle of least privilege to all LLM agents and their tools. "
-            "Use explicit tool allowlists, avoid wildcard access, and require human "
-            "approval for high-impact actions."
+            "Restrict tools to only what the agent needs. Use an explicit allowlist of "
+            "callable functions instead of globals() or getattr() dispatch. Require "
+            "human confirmation before high-impact actions. Example: "
+            "ALLOWED_TOOLS = {'search': search_fn, 'summarize': summarize_fn}; "
+            "fn = ALLOWED_TOOLS.get(tool_name) and call fn() only if fn is not None."
         ),
         strict_severity=Severity.MEDIUM,
     )
@@ -228,14 +251,19 @@ registry.register(
     RuleDefinition(
         rule_id="LLM06",
         name="Insecure Plugin Design",
-        status=Status.OUT_OF_SCOPE,
+        status=Status.ACTIVE,
         default_severity=Severity.HIGH,
         description=(
-            "LLM plugins with insufficient input validation or access controls can be "
-            "exploited to bypass security boundaries."
+            "LLM tool/plugin decorated with @tool or equivalent contains a dangerous "
+            "sink (eval, exec, shell command). Since the LLM controls tool invocation, "
+            "a prompt injection attack can redirect execution to these dangerous sinks. "
+            "Detection is based on @tool decorator presence combined with sink patterns."
         ),
         fix_suggestion=(
-            "Apply secure-by-default design principles to all LLM plugin interfaces."
+            "Apply secure-by-default design to all LLM plugin interfaces. Validate all "
+            "inputs to @tool-decorated functions as if they come from untrusted sources. "
+            "Avoid eval/exec/shell sinks inside tool functions. Use parameterized "
+            "interfaces and explicit allowlists for any dynamic dispatch."
         ),
     )
 )
