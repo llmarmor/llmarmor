@@ -150,7 +150,7 @@ _EVAL_NAME_FRAGMENTS: frozenset[str] = frozenset(
 def analyze(filepath: str, content: str, strict: bool = False) -> dict:
     """Run AST-based checks on *content*.
 
-    Returns a dict with three keys:
+    Returns a dict with exactly three keys:
 
     ``findings``
         A list of finding dicts (same schema as the regex-rule functions).

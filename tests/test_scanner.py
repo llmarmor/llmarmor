@@ -1237,7 +1237,7 @@ def execute(fn_name):
         )
 
     def test_getattr_string_literal_clears_regex_line(self, tmp_path: Path):
-        """getattr(obj, 'name') with string literal must add line to cleared (regex suppression)."""
+        """getattr(obj, "name") with string literal must add line to cleared (regex suppression)."""
         code = 'result = getattr(obj, "method_name")\n'
         result = self._analyze(tmp_path, code)
         assert (1, "LLM08") in result["cleared"], (
