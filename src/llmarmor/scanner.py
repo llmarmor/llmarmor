@@ -57,6 +57,9 @@ def run_scan(path: str, strict: bool = False) -> list[dict]:
     return findings
 
 
+_EVAL_CONTEXT_DOWNGRADE_RULES = frozenset(["LLM05", "LLM08"])
+
+
 def _scan_file(py_file: Path, content: str, findings: list[dict], strict: bool = False) -> None:
     """Run all checks on a single Python file and append results to *findings*."""
     # AST analysis: additional findings + (line, rule_id) pairs to suppress.
@@ -69,9 +72,11 @@ def _scan_file(py_file: Path, content: str, findings: list[dict], strict: bool =
             ast_result = _ast.analyze(str(py_file), content, strict=strict)
         ast_findings: list[dict] = ast_result["findings"]
         cleared: set[tuple[int, str]] = ast_result["cleared"]
+        is_eval_ctx: bool = ast_result.get("is_eval_context", False)
     except Exception:  # noqa: BLE001
         ast_findings = []
         cleared = set()
+        is_eval_ctx = False
 
     # Regex rules: skip findings on lines that AST has already handled or
     # determined to be safe (e.g. **config with max_tokens, user-role messages).
@@ -79,6 +84,14 @@ def _scan_file(py_file: Path, content: str, findings: list[dict], strict: bool =
     for rule_checker in get_rules(strict=strict):
         for finding in rule_checker(py_file, content):
             if (finding["line"], finding["rule_id"]) not in cleared:
+                # Downgrade LLM05 and LLM08 regex findings in test/eval files to
+                # INFO to reduce noise from legitimate evaluation harnesses.
+                if is_eval_ctx and finding["rule_id"] in _EVAL_CONTEXT_DOWNGRADE_RULES:
+                    finding = {
+                        **finding,
+                        "severity": "INFO",
+                        "description": f"[eval context] {finding['description']}",
+                    }
                 key = (finding["filepath"], finding["line"], finding["rule_id"])
                 if key not in seen:
                     seen.add(key)

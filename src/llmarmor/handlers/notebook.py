@@ -81,6 +81,17 @@ def scan_notebook_file(filepath: str, content: str) -> list[dict]:
                 # boundary.
                 if f["rule_id"] == "LLM01":
                     continue
+                # Downgrade LLM08 (Excessive Agency) findings in notebooks to
+                # INFO.  Notebooks are overwhelmingly tutorial and example code
+                # where patterns like CodeInterpreterTool() or getattr() dispatch
+                # appear by design to demonstrate a capability, not as a
+                # production vulnerability.
+                if f["rule_id"] == "LLM08":
+                    f = {
+                        **f,
+                        "severity": "INFO",
+                        "description": f"[notebook/tutorial] {f['description']}",
+                    }
                 f["filepath"] = filepath
                 # Offset cell-relative line numbers to notebook-level numbers.
                 f["line"] = cell_start + f["line"]
