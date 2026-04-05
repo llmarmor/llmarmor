@@ -4,6 +4,14 @@ Parameters of ``@tool``-decorated functions (LangChain, CrewAI, or any
 framework using ``@tool``) are chosen by the LLM at runtime and are
 therefore treated as source-tainted.  The AST analysis should emit LLM05
 findings when those parameters reach dangerous sinks.
+
+Also covers the expanded set of tool decorator names:
+
+* ``@function_tool``  — OpenAI Agents SDK
+* ``@kernel_function`` — Microsoft Semantic Kernel
+* ``@ai_tool``        — Pydantic AI
+* ``@ai_fn``          — Marvin AI
+* ``@module.tool(...)`` — module-qualified import form
 """
 
 from pathlib import Path
@@ -228,3 +236,158 @@ class TestLLM05ToolDecorator:
             f["rule_id"] == "LLM05" and f["severity"] == "CRITICAL"
             for f in result["findings"]
         ), f"Expected LLM05 CRITICAL for @tool('Name', args_schema=...) form; got: {result['findings']}"
+
+
+class TestLLM05ExpandedToolDecorators:
+    """LLM05 findings for the expanded set of tool decorator names.
+
+    All names in ``_TOOL_DECORATOR_NAMES`` must promote their function
+    parameters to ``_source_tainted`` so that LLM05 shell/exec/HTML/
+    json.loads checks fire — just like ``@tool`` does.
+    """
+
+    # ------------------------------------------------------------------
+    # @function_tool  (OpenAI Agents SDK)
+    # ------------------------------------------------------------------
+
+    def test_function_tool_subprocess_run_flagged_llm05_critical(self, tmp_path: Path):
+        """@function_tool param reaching subprocess.run() → LLM05 CRITICAL."""
+        code = (
+            "import subprocess\n"
+            "@function_tool\n"
+            "def run_cmd(command: str) -> str:\n"
+            "    return subprocess.run(command, shell=True).stdout\n"
+        )
+        result = _analyze(tmp_path, code)
+        assert any(
+            f["rule_id"] == "LLM05" and f["severity"] == "CRITICAL"
+            for f in result["findings"]
+        ), f"Expected LLM05 CRITICAL for @function_tool + subprocess.run; got: {result['findings']}"
+
+    def test_function_tool_eval_flagged_llm05_critical(self, tmp_path: Path):
+        """@function_tool param reaching eval() → LLM05 CRITICAL."""
+        code = (
+            "@function_tool\n"
+            "def code_runner(expression: str) -> object:\n"
+            "    return eval(expression)\n"
+        )
+        result = _analyze(tmp_path, code)
+        assert any(
+            f["rule_id"] == "LLM05" and f["severity"] == "CRITICAL"
+            for f in result["findings"]
+        ), f"Expected LLM05 CRITICAL for @function_tool + eval; got: {result['findings']}"
+
+    # ------------------------------------------------------------------
+    # @kernel_function  (Microsoft Semantic Kernel)
+    # ------------------------------------------------------------------
+
+    def test_kernel_function_os_system_flagged_llm05_critical(self, tmp_path: Path):
+        """@kernel_function param reaching os.system() → LLM05 CRITICAL."""
+        code = (
+            "import os\n"
+            "@kernel_function(name='shell', description='run commands')\n"
+            "def run_shell(command: str) -> int:\n"
+            "    return os.system(command)\n"
+        )
+        result = _analyze(tmp_path, code)
+        assert any(
+            f["rule_id"] == "LLM05" and f["severity"] == "CRITICAL"
+            for f in result["findings"]
+        ), f"Expected LLM05 CRITICAL for @kernel_function + os.system; got: {result['findings']}"
+
+    def test_kernel_function_exec_flagged_llm05_critical(self, tmp_path: Path):
+        """@kernel_function param reaching exec() → LLM05 CRITICAL."""
+        code = (
+            "@kernel_function\n"
+            "def exec_tool(code: str) -> None:\n"
+            "    exec(code)\n"
+        )
+        result = _analyze(tmp_path, code)
+        assert any(
+            f["rule_id"] == "LLM05" and f["severity"] == "CRITICAL"
+            for f in result["findings"]
+        ), f"Expected LLM05 CRITICAL for @kernel_function + exec; got: {result['findings']}"
+
+    # ------------------------------------------------------------------
+    # @ai_tool  (Pydantic AI)
+    # ------------------------------------------------------------------
+
+    def test_ai_tool_subprocess_popen_flagged_llm05_critical(self, tmp_path: Path):
+        """@ai_tool param reaching subprocess.Popen() → LLM05 CRITICAL."""
+        code = (
+            "import subprocess\n"
+            "@ai_tool\n"
+            "def exec_cmd(cmd: str) -> str:\n"
+            "    proc = subprocess.Popen(cmd, shell=True)\n"
+            "    return proc.communicate()[0]\n"
+        )
+        result = _analyze(tmp_path, code)
+        assert any(
+            f["rule_id"] == "LLM05" and f["severity"] == "CRITICAL"
+            for f in result["findings"]
+        ), f"Expected LLM05 CRITICAL for @ai_tool + subprocess.Popen; got: {result['findings']}"
+
+    def test_ai_tool_markup_flagged_llm05_high(self, tmp_path: Path):
+        """@ai_tool param reaching Markup() → LLM05 HIGH."""
+        code = (
+            "from markupsafe import Markup\n"
+            "@ai_tool\n"
+            "def render(content: str) -> str:\n"
+            "    return str(Markup(content))\n"
+        )
+        result = _analyze(tmp_path, code)
+        assert any(
+            f["rule_id"] == "LLM05" and f["severity"] == "HIGH"
+            for f in result["findings"]
+        ), f"Expected LLM05 HIGH for @ai_tool + Markup; got: {result['findings']}"
+
+    # ------------------------------------------------------------------
+    # @ai_fn  (Marvin AI)
+    # ------------------------------------------------------------------
+
+    def test_ai_fn_os_popen_flagged_llm05_critical(self, tmp_path: Path):
+        """@ai_fn param reaching os.popen() → LLM05 CRITICAL."""
+        code = (
+            "import os\n"
+            "@ai_fn\n"
+            "def run(command: str) -> str:\n"
+            "    return os.popen(command).read()\n"
+        )
+        result = _analyze(tmp_path, code)
+        assert any(
+            f["rule_id"] == "LLM05" and f["severity"] == "CRITICAL"
+            for f in result["findings"]
+        ), f"Expected LLM05 CRITICAL for @ai_fn + os.popen; got: {result['findings']}"
+
+    def test_ai_fn_json_loads_flagged_llm05_info(self, tmp_path: Path):
+        """@ai_fn param reaching json.loads() → LLM05 INFO in normal mode."""
+        code = (
+            "import json\n"
+            "@ai_fn\n"
+            "def parse(data: str) -> dict:\n"
+            "    return json.loads(data)\n"
+        )
+        result = _analyze(tmp_path, code)
+        assert any(
+            f["rule_id"] == "LLM05" and f["severity"] == "INFO"
+            for f in result["findings"]
+        ), f"Expected LLM05 INFO for @ai_fn + json.loads; got: {result['findings']}"
+
+    # ------------------------------------------------------------------
+    # module-qualified form  @module.tool(...)
+    # ------------------------------------------------------------------
+
+    def test_module_qualified_tool_subprocess_run_flagged_llm05_critical(self, tmp_path: Path):
+        """@module.tool('...') param reaching subprocess.run() → LLM05 CRITICAL."""
+        code = (
+            "import subprocess\n"
+            "import langchain\n"
+            "@langchain.tool('Shell Tool')\n"
+            "def shell(command: str) -> str:\n"
+            "    return subprocess.run(command, shell=True).stdout\n"
+        )
+        result = _analyze(tmp_path, code)
+        assert any(
+            f["rule_id"] == "LLM05" and f["severity"] == "CRITICAL"
+            for f in result["findings"]
+        ), f"Expected LLM05 CRITICAL for @module.tool + subprocess.run; got: {result['findings']}"
