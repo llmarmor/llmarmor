@@ -245,7 +245,7 @@ determines whether the finding is shown in terminal output by default, what exit
 code the process returns, and what action you should take before merging.
 
 | Level | Icon | Meaning | Exit Code | Shown By Default |
-|-------|------|---------|-------------|-----------|------------------|
+|-------|------|---------|-----------|------------------|
 | **CRITICAL** | 🔴 | Confirmed high-impact vulnerability — real secrets in source code, tainted user input passed to `eval()`/`exec()`/shell commands, or attacker-controlled dynamic dispatch via `globals()` | `2` | ✅ Yes |
 | **HIGH** | 🟠 | High-confidence security issue — prompt injection via string interpolation, SQL/HTML injection from LLM output, wildcard tool access, or dangerous tool classes | `1` | ✅ Yes |
 | **MEDIUM** | 🟡 | Likely issue requiring attention — missing `max_tokens` on LLM API calls, disabled human-in-the-loop approval, broad filesystem tool access, or strict-mode promotions | `1` | ✅ Yes |
