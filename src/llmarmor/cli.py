@@ -27,9 +27,7 @@ def _build_mode(strict: bool, verbose: bool) -> str:
 
 def _compute_exit_code(findings: list[dict]) -> int:
     """Return an exit code based on the worst finding severity.
-
-    Exit codes follow the convention used by semgrep and bandit:
-
+    
     - ``0`` — no findings at or above MEDIUM (clean or INFO/LOW only)
     - ``1`` — at least one HIGH or MEDIUM finding
     - ``2`` — at least one CRITICAL finding (must fix immediately)
