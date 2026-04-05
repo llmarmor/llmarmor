@@ -1236,6 +1236,208 @@ def execute(fn_name):
             f"getattr with string literal must not be flagged; got: {llm08}"
         )
 
+    def test_getattr_string_literal_clears_regex_line(self, tmp_path: Path):
+        """getattr(obj, 'name') with string literal must add line to cleared (regex suppression)."""
+        code = 'result = getattr(obj, "method_name")\n'
+        result = self._analyze(tmp_path, code)
+        assert (1, "LLM08") in result["cleared"], (
+            "getattr with string literal should add line to cleared to suppress regex; "
+            f"cleared={result['cleared']}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tests for eval/test context downgrade (LLM05 and LLM08)
+# ---------------------------------------------------------------------------
+
+
+class TestEvalContextDowngrade:
+    """Tests that LLM05 and LLM08 findings are downgraded to INFO in test/eval files."""
+
+    def _analyze(self, filepath: str, code: str) -> dict:
+        from llmarmor.ast_analysis import analyze
+        return analyze(filepath, code)
+
+    def _scan(self, py_file: Path, code: str) -> list[dict]:
+        from llmarmor.scanner import _scan_file
+        findings: list[dict] = []
+        _scan_file(py_file, code, findings)
+        return findings
+
+    def test_ast_llm05_downgraded_in_test_file(self, tmp_path: Path):
+        """LLM05 AST findings in a test file must be downgraded to INFO."""
+        test_file = tmp_path / "tests" / "test_app.py"
+        test_file.parent.mkdir()
+        code = """\
+def test_something(user_input):
+    eval(user_input)
+"""
+        result = self._analyze(str(test_file), code)
+        llm05 = [f for f in result["findings"] if f["rule_id"] == "LLM05"]
+        assert llm05, "Expected LLM05 finding in test file"
+        assert all(f["severity"] == "INFO" for f in llm05), (
+            f"LLM05 findings in test file must be INFO; got: {[f['severity'] for f in llm05]}"
+        )
+        assert all("[eval context]" in f["description"] for f in llm05), (
+            "LLM05 descriptions in test file must be prefixed with [eval context]"
+        )
+
+    def test_ast_llm08_downgraded_in_test_file(self, tmp_path: Path):
+        """LLM08 AST findings in a test file must be downgraded to INFO."""
+        test_file = tmp_path / "tests" / "test_app.py"
+        test_file.parent.mkdir()
+        code = """\
+def test_dispatch(module, name):
+    return getattr(module, name)()
+"""
+        result = self._analyze(str(test_file), code)
+        llm08 = [f for f in result["findings"] if f["rule_id"] == "LLM08"]
+        assert llm08, "Expected LLM08 finding in test file"
+        assert all(f["severity"] == "INFO" for f in llm08), (
+            f"LLM08 findings in test file must be INFO; got: {[f['severity'] for f in llm08]}"
+        )
+
+    def test_regex_llm05_downgraded_in_test_file(self, tmp_path: Path):
+        """LLM05 regex findings in a test file must be downgraded to INFO by scanner."""
+        test_file = tmp_path / "tests" / "test_something.py"
+        test_file.parent.mkdir()
+        code = "subprocess.Popen(llm_output)\n"
+        findings = self._scan(test_file, code)
+        llm05 = [f for f in findings if f["rule_id"] == "LLM05"]
+        assert llm05, "Expected LLM05 finding for subprocess.Popen(llm_output) in test file"
+        assert all(f["severity"] == "INFO" for f in llm05), (
+            f"LLM05 regex findings in test file must be INFO; got: {[f['severity'] for f in llm05]}"
+        )
+
+    def test_regex_llm08_downgraded_in_test_file(self, tmp_path: Path):
+        """LLM08 regex findings in a test file must be downgraded to INFO by scanner."""
+        test_file = tmp_path / "tests" / "test_agent.py"
+        test_file.parent.mkdir()
+        code = "tools = [CodeInterpreterTool()]\n"
+        findings = self._scan(test_file, code)
+        llm08 = [f for f in findings if f["rule_id"] == "LLM08"]
+        assert llm08, "Expected LLM08 finding for CodeInterpreterTool() in test file"
+        assert all(f["severity"] == "INFO" for f in llm08), (
+            f"LLM08 regex findings in test file must be INFO; got: {[f['severity'] for f in llm08]}"
+        )
+
+    def test_analyze_returns_is_eval_context_flag(self, tmp_path: Path):
+        """analyze() must return is_eval_context=True for files in a tests/ directory."""
+        test_file = tmp_path / "tests" / "test_utils.py"
+        test_file.parent.mkdir()
+        result = self._analyze(str(test_file), "x = 1\n")
+        assert result.get("is_eval_context") is True, (
+            f"Expected is_eval_context=True for file in tests/ dir; got: {result.get('is_eval_context')}"
+        )
+
+    def test_analyze_returns_is_eval_context_false_for_production(self, tmp_path: Path):
+        """analyze() must return is_eval_context=False for production code files."""
+        prod_file = tmp_path / "app.py"
+        result = self._analyze(str(prod_file), "x = 1\n")
+        assert result.get("is_eval_context") is False, (
+            f"Expected is_eval_context=False for production file; got: {result.get('is_eval_context')}"
+        )
+
+    def test_llm05_not_downgraded_in_production_file(self, tmp_path: Path):
+        """LLM05 findings in production files must retain their original severity."""
+        code = """\
+def process(user_input):
+    eval(user_input)
+"""
+        result = self._analyze(str(tmp_path / "app.py"), code)
+        llm05 = [f for f in result["findings"] if f["rule_id"] == "LLM05"]
+        assert llm05, "Expected LLM05 finding"
+        assert all(f["severity"] == "CRITICAL" for f in llm05), (
+            f"LLM05 findings in production files must be CRITICAL; got: {[f['severity'] for f in llm05]}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tests for LLM05 subprocess LLM-context awareness
+# ---------------------------------------------------------------------------
+
+
+class TestSubprocessSourceTaint:
+    """Tests that LLM05 shell-sink AST checks use source-taint (not function-param taint)."""
+
+    def _analyze(self, tmp_path: Path, code: str) -> dict:
+        from llmarmor.ast_analysis import analyze
+        return analyze(str(tmp_path / "app.py"), code)
+
+    def test_subprocess_with_function_param_not_flagged(self, tmp_path: Path):
+        """subprocess.Popen(cmd) where cmd is a plain function parameter must NOT be flagged.
+
+        This is the scheduler.py / utility-function false positive case.
+        """
+        code = """\
+import subprocess
+
+def run_job(command, interval):
+    subprocess.Popen(command)
+"""
+        result = self._analyze(tmp_path, code)
+        llm05 = [f for f in result["findings"] if f["rule_id"] == "LLM05"]
+        assert not llm05, (
+            f"subprocess.Popen(function_param) must NOT produce LLM05 (false positive); got: {llm05}"
+        )
+
+    def test_subprocess_with_request_data_flagged(self, tmp_path: Path):
+        """subprocess.run(data) where data comes from request.json must be flagged."""
+        code = """\
+import subprocess
+data = request.json["cmd"]
+subprocess.run(data, shell=True)
+"""
+        result = self._analyze(tmp_path, code)
+        llm05 = [f for f in result["findings"] if f["rule_id"] == "LLM05"]
+        assert llm05, (
+            f"subprocess.run(request.json data) must produce LLM05; got: {result['findings']}"
+        )
+        assert any(f["severity"] == "CRITICAL" for f in llm05)
+
+    def test_subprocess_with_llm_api_response_flagged(self, tmp_path: Path):
+        """subprocess.run(content) where content comes from an LLM API call must be flagged."""
+        code = """\
+import subprocess
+response = client.chat.completions.create(model="gpt-4", messages=[])
+content = response.choices[0].message.content
+subprocess.run(content, shell=True)
+"""
+        result = self._analyze(tmp_path, code)
+        llm05 = [f for f in result["findings"] if f["rule_id"] == "LLM05"]
+        assert llm05, (
+            f"subprocess.run(llm_api_response) must produce LLM05; got: {result['findings']}"
+        )
+        assert any(f["severity"] == "CRITICAL" for f in llm05)
+
+    def test_subprocess_with_stdin_input_flagged(self, tmp_path: Path):
+        """subprocess.run(cmd) where cmd comes from input() must be flagged."""
+        code = """\
+import subprocess
+cmd = input("Enter command: ")
+subprocess.run(cmd, shell=True)
+"""
+        result = self._analyze(tmp_path, code)
+        llm05 = [f for f in result["findings"] if f["rule_id"] == "LLM05"]
+        assert llm05, (
+            f"subprocess.run(input()) must produce LLM05; got: {result['findings']}"
+        )
+
+    def test_subprocess_with_alias_of_param_not_flagged(self, tmp_path: Path):
+        """subprocess.Popen(alias) where alias = param must NOT be flagged."""
+        code = """\
+import subprocess
+
+def run_command(cmd):
+    command = cmd
+    subprocess.Popen(command)
+"""
+        result = self._analyze(tmp_path, code)
+        llm05 = [f for f in result["findings"] if f["rule_id"] == "LLM05"]
+        assert not llm05, (
+            f"subprocess.Popen(alias of param) must NOT produce LLM05; got: {llm05}"
+        )
+
 
 class TestSystemPromptLeak:
     VULNERABLE_CODE = (

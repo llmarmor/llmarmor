@@ -150,7 +150,7 @@ _EVAL_NAME_FRAGMENTS: frozenset[str] = frozenset(
 def analyze(filepath: str, content: str, strict: bool = False) -> dict:
     """Run AST-based checks on *content*.
 
-    Returns a dict with two keys:
+    Returns a dict with three keys:
 
     ``findings``
         A list of finding dicts (same schema as the regex-rule functions).
@@ -165,9 +165,14 @@ def analyze(filepath: str, content: str, strict: bool = False) -> dict:
         the AST has confirmed the pattern is safe (e.g. ``**config`` spread
         that includes ``max_tokens``).
 
+    ``is_eval_context``
+        ``True`` when the file is identified as an eval / test / grading
+        harness.  The scanner uses this to downgrade LLM05 and LLM08 regex
+        findings from test files to INFO severity.
+
     If *content* cannot be parsed as valid Python the function returns
-    ``{"findings": [], "cleared": set()}`` so callers never need to handle
-    exceptions.
+    ``{"findings": [], "cleared": set(), "is_eval_context": False}`` so
+    callers never need to handle exceptions.
 
     When *strict* is ``True``, additional borderline patterns are flagged:
 
@@ -181,25 +186,26 @@ def analyze(filepath: str, content: str, strict: bool = False) -> dict:
     try:
         tree = ast.parse(content, filename=str(filepath))
     except SyntaxError:
-        return {"findings": [], "cleared": set()}
+        return {"findings": [], "cleared": set(), "is_eval_context": False}
 
     visitor = _Analyzer(str(filepath), strict=strict)
     visitor.visit(tree)
 
     findings = visitor.findings
-    if _is_eval_context(filepath, tree):
+    eval_ctx = _is_eval_context(filepath, tree)
+    if eval_ctx:
         findings = [
             {
                 **f,
                 "severity": "INFO",
                 "description": f"[eval context] {f['description']}",
             }
-            if f["rule_id"] == _LLM01
+            if f["rule_id"] in (_LLM01, _LLM05, _LLM08)
             else f
             for f in findings
         ]
 
-    return {"findings": findings, "cleared": visitor.cleared}
+    return {"findings": findings, "cleared": visitor.cleared, "is_eval_context": eval_ctx}
 
 
 def collect_tainted(tree: ast.AST) -> set[str]:
@@ -246,6 +252,15 @@ class _Analyzer(ast.NodeVisitor):
         # Taint is seeded from actual user-data *sources* (request, input(), sys.argv,
         # websocket.receive(), function parameters), not from variable names.
         self._tainted: set[str] = set()
+        # LLM-response taint: subset of _tainted whose values originate specifically
+        # from LLM API responses.  Used to propagate LLM taint through attribute
+        # and subscript access (e.g. response.choices[0].message.content).
+        self._llm_tainted: set[str] = set()
+        # Source taint: variables assigned from explicit user/LLM-controlled sources
+        # (request.json, input(), sys.argv, websocket, LLM API calls).
+        # Function parameters are NOT included.  Used by shell-sink checks to avoid
+        # false positives from utility functions whose parameters reach subprocess.
+        self._source_tainted: set[str] = set()
         # Config-dict tracking: var name → set of string keys in its dict literal.
         self._config_dicts: dict[str, set[str]] = {}
 
@@ -291,11 +306,32 @@ class _Analyzer(ast.NodeVisitor):
             # assigned directly from a user-controlled data source.
             if _is_user_data_source_rhs(rhs):
                 self._tainted.add(name)
+                self._source_tainted.add(name)
             # Taint propagation: alias = tainted_var  →  alias is tainted.
             # Does NOT propagate through function calls to avoid false positives
             # from sanitizer patterns like ``clean = sanitize(user_input)``.
             elif isinstance(rhs, ast.Name) and rhs.id in self._tainted:
                 self._tainted.add(name)
+                if rhs.id in self._source_tainted:
+                    self._source_tainted.add(name)
+
+            # LLM-response taint seeding: the variable receives the return value
+            # of a recognised LLM API call (e.g. client.chat.completions.create).
+            if _is_llm_api_call_rhs(rhs):
+                self._llm_tainted.add(name)
+                self._source_tainted.add(name)
+                self._tainted.add(name)
+            # LLM-taint propagation through direct aliases and attribute/subscript
+            # access on an already-LLM-tainted receiver.  This covers patterns like:
+            #   content = response.choices[0].message.content
+            # where ``response`` is LLM-tainted and ``content`` should be too.
+            elif isinstance(rhs, ast.Name) and rhs.id in self._llm_tainted:
+                self._llm_tainted.add(name)
+                self._source_tainted.add(name)
+            elif isinstance(rhs, (ast.Attribute, ast.Subscript)):
+                if _receiver_root(rhs) in self._llm_tainted:
+                    self._llm_tainted.add(name)
+                    self._source_tainted.add(name)
 
             # Config-dict tracking for LLM10 **config suppression.
             if isinstance(rhs, ast.Dict):
@@ -595,9 +631,16 @@ class _Analyzer(ast.NodeVisitor):
         return False
 
     def _check_llm05_shell_sinks(self, node: ast.Call, method: str) -> bool:
-        """Return True (and emit a finding) when a tainted var is passed to a shell sink."""
+        """Return True (and emit a finding) when a source-tainted var is passed to a shell sink.
+
+        Only variables whose taint originates from an explicit user-controlled or
+        LLM-controlled source (``_source_tainted``) are flagged.  Plain function
+        parameters are not included in this set, which avoids false positives in
+        utility functions like ``def run_job(cmd): subprocess.Popen(cmd)`` where
+        ``cmd`` is a parameter that may not carry attacker-controlled data.
+        """
         if method in _DANGEROUS_SHELL_SINKS:
-            if node.args and self._is_tainted_node(node.args[0]):
+            if node.args and self._is_source_tainted_node(node.args[0]):
                 self.findings.append(
                     _finding(
                         _LLM05,
@@ -685,36 +728,51 @@ class _Analyzer(ast.NodeVisitor):
         Detects:
         * ``getattr(module, tainted_name)()`` — function name controlled by tainted var
         * ``globals()[tainted_name]()`` — globals dict lookup with tainted key
+
+        Also suppresses the LLM08 regex finding on lines where a ``getattr``
+        call uses a string *literal* as the second argument (i.e. the name is
+        hardcoded and cannot be attacker-controlled), even though the regex
+        layer's negative-lookahead should already exclude such cases.
         """
         func = node.func
 
         # getattr(obj, tainted_name)(args) — node.func is the inner getattr() call.
         if isinstance(func, ast.Call):
             inner_func = func.func
-            if (
-                isinstance(inner_func, ast.Name)
-                and inner_func.id == "getattr"
-                and len(func.args) >= 2
-                and self._is_tainted_node(func.args[1])
-            ):
-                self.findings.append(
-                    _finding(
-                        _LLM08,
-                        "Excessive Agency",
-                        "CRITICAL",
-                        self.filepath,
-                        node.lineno,
-                        (
-                            "getattr() is called with a tainted (user-controlled) "
-                            "function name. An attacker can redirect execution to any "
-                            "method on the target object."
-                        ),
-                        (
-                            "Validate the function name against an explicit allowlist "
-                            "before calling: `if name in ALLOWED: getattr(obj, name)()`."
-                        ),
+            if isinstance(inner_func, ast.Name) and inner_func.id == "getattr" and len(func.args) >= 2:
+                second_arg = func.args[1]
+                if isinstance(second_arg, ast.Constant) and isinstance(second_arg.value, str):
+                    # String literal — name is fixed, no dispatch risk.
+                    # Suppress any regex false-positive on this line.
+                    self.cleared.add((node.lineno, _LLM08))
+                    return True
+                if self._is_tainted_node(second_arg):
+                    self.findings.append(
+                        _finding(
+                            _LLM08,
+                            "Excessive Agency",
+                            "CRITICAL",
+                            self.filepath,
+                            node.lineno,
+                            (
+                                "getattr() is called with a tainted (user-controlled) "
+                                "function name. An attacker can redirect execution to any "
+                                "method on the target object."
+                            ),
+                            (
+                                "Validate the function name against an explicit allowlist "
+                                "before calling: `if name in ALLOWED: getattr(obj, name)()`."
+                            ),
+                        )
                     )
-                )
+                    self.cleared.add((node.lineno, _LLM08))
+                    return True
+
+        # Bare getattr(obj, "literal") call (result not immediately invoked).
+        # Suppress regex finding when the second argument is a string constant.
+        if isinstance(func, ast.Name) and func.id == "getattr" and len(node.args) >= 2:
+            second_arg = node.args[1]
+            if isinstance(second_arg, ast.Constant) and isinstance(second_arg.value, str):
                 self.cleared.add((node.lineno, _LLM08))
                 return True
 
@@ -774,6 +832,48 @@ class _Analyzer(ast.NodeVisitor):
             # Walk the concatenation tree iteratively to avoid deep recursion.
             for child in ast.walk(node):
                 if isinstance(child, ast.Name) and child.id in self._tainted:
+                    return True
+        return False
+
+    def _is_llm_tainted_node(self, node: ast.expr) -> bool:
+        """Return True if *node* references a variable that carries LLM API response data.
+
+        Same shape as :meth:`_is_tainted_node` but consults ``_llm_tainted``
+        instead of ``_tainted``.
+        """
+        if isinstance(node, ast.Name):
+            return node.id in self._llm_tainted
+        if isinstance(node, ast.JoinedStr):
+            for child in ast.walk(node):
+                if isinstance(child, ast.Name) and child.id in self._llm_tainted:
+                    return True
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            for child in ast.walk(node):
+                if isinstance(child, ast.Name) and child.id in self._llm_tainted:
+                    return True
+        return False
+
+    def _is_source_tainted_node(self, node: ast.expr) -> bool:
+        """Return True if *node* references a variable tainted from an explicit source.
+
+        Unlike :meth:`_is_tainted_node`, this excludes variables that are only
+        tainted because they are function parameters.  It covers:
+
+        * ``request.json``, ``request.form``, ``input()``, ``sys.argv`` — user data
+        * LLM API call results and their attribute/subscript derivatives
+
+        Used by :meth:`_check_llm05_shell_sinks` to avoid false positives from
+        utility functions whose parameters coincidentally reach a subprocess call.
+        """
+        if isinstance(node, ast.Name):
+            return node.id in self._source_tainted
+        if isinstance(node, ast.JoinedStr):
+            for child in ast.walk(node):
+                if isinstance(child, ast.Name) and child.id in self._source_tainted:
+                    return True
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            for child in ast.walk(node):
+                if isinstance(child, ast.Name) and child.id in self._source_tainted:
                     return True
         return False
 
@@ -924,6 +1024,21 @@ def _is_request_rhs(node: ast.expr) -> bool:
 
 def _is_llm10_call(method: str) -> bool:
     return any(method.endswith(m) for m in _LLM10_METHODS) and "images" not in method
+
+
+def _is_llm_api_call_rhs(node: ast.expr) -> bool:
+    """Return True if *node* is a call to a recognised LLM API method.
+
+    Used to seed the ``_llm_tainted`` set: when a variable is assigned the
+    direct result of an LLM API call (e.g. ``response = client.chat.completions
+    .create(...)``), it is tagged as LLM-response-tainted.  This is a stricter
+    taint category than ordinary user-controlled taint and is used to restrict
+    LLM05 shell-sink findings to genuine LLM output flows.
+    """
+    if not isinstance(node, ast.Call):
+        return False
+    chain = _attr_chain(node.func)
+    return _is_llm10_call(chain)
 
 
 def _finding(
