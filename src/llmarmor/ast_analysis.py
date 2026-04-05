@@ -32,6 +32,7 @@ On ``SyntaxError`` (or any other parse failure), both values are empty.
 """
 
 import ast
+import collections
 from pathlib import Path as _Path
 
 _LLM01 = "LLM01"
@@ -751,34 +752,42 @@ class _Analyzer(ast.NodeVisitor):
     def _check_llm08_tool_shell_sinks(self, node: ast.FunctionDef) -> None:
         """Emit HIGH LLM08 finding for each shell sink inside a ``@tool``-decorated function.
 
-        Walks the entire body of *node* (including nested scopes) and emits a
-        finding for every ``subprocess.*`` or ``os.system`` / ``os.popen`` call.
+        Walks the body of *node* looking for ``subprocess.*`` or ``os.system`` /
+        ``os.popen`` calls.  The traversal stops at nested function/class
+        boundaries to avoid false positives from helper functions defined inside
+        the tool that are not themselves LLM-invocable.
         """
-        for child in ast.walk(node):
-            if not isinstance(child, ast.Call):
+        queue: collections.deque[ast.AST] = collections.deque(ast.iter_child_nodes(node))
+        while queue:
+            child = queue.popleft()
+            # Do not recurse into nested function/class definitions — shell
+            # sinks in those scopes are not directly invoked by the @tool body.
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 continue
-            method = _attr_chain(child.func)
-            if method in _DANGEROUS_SHELL_SINKS:
-                self.findings.append(
-                    _finding(
-                        _LLM08,
-                        "Excessive Agency",
-                        "HIGH",
-                        self.filepath,
-                        child.lineno,
-                        (
-                            f"@tool-decorated function '{node.name}' contains "
-                            f"{method}() call — this grants the LLM agent "
-                            "OS-level command execution capability."
-                        ),
-                        (
-                            "Avoid placing shell or subprocess calls inside "
-                            "@tool-decorated functions. If shell access is required, "
-                            "apply strict input validation and sandbox the execution "
-                            "environment."
-                        ),
+            if isinstance(child, ast.Call):
+                method = _attr_chain(child.func)
+                if method in _DANGEROUS_SHELL_SINKS:
+                    self.findings.append(
+                        _finding(
+                            _LLM08,
+                            "Excessive Agency",
+                            "HIGH",
+                            self.filepath,
+                            child.lineno,
+                            (
+                                f"@tool-decorated function '{node.name}' contains "
+                                f"{method}() call — this grants the LLM agent "
+                                "OS-level command execution capability."
+                            ),
+                            (
+                                "Avoid placing shell or subprocess calls inside "
+                                "@tool-decorated functions. If shell access is required, "
+                                "apply strict input validation and sandbox the execution "
+                                "environment."
+                            ),
+                        )
                     )
-                )
+            queue.extend(ast.iter_child_nodes(child))
 
     def _check_llm08_dynamic_dispatch(self, node: ast.Call, method: str) -> bool:
         """Return True (and emit a finding) for taint-tracked dynamic dispatch patterns.

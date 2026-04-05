@@ -388,3 +388,29 @@ class TestLLM08ExcessiveAgency:
             f"Non-@tool function with subprocess.run() should not produce HIGH LLM08 AST finding; "
             f"got: {llm08_high_findings}"
         )
+
+    def test_tool_decorated_nested_function_subprocess_not_flagged(self, tmp_path: Path):
+        """subprocess.run() inside a nested helper function of a @tool must NOT be flagged.
+
+        The traversal stops at nested function boundaries to avoid false positives
+        from inner helper functions that are not directly LLM-invocable.
+        """
+        code = (
+            "import subprocess\n"
+            "from langchain.tools import tool\n"
+            "\n"
+            "@tool\n"
+            "def my_tool(query: str) -> str:\n"
+            "    def _helper(cmd):\n"
+            "        subprocess.run(cmd)  # inside nested helper, not flagged\n"
+            "    return query.upper()\n"
+        )
+        result = _analyze(tmp_path, code)
+        llm08_high_findings = [
+            f for f in result["findings"]
+            if f["rule_id"] == "LLM08" and f["severity"] == "HIGH"
+        ]
+        assert llm08_high_findings == [], (
+            f"subprocess.run() in nested helper inside @tool should not produce HIGH LLM08 AST finding; "
+            f"got: {llm08_high_findings}"
+        )
