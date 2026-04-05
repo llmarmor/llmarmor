@@ -259,8 +259,9 @@ class _Analyzer(ast.NodeVisitor):
         self._llm_tainted: set[str] = set()
         # Source taint: variables assigned from explicit user/LLM-controlled sources
         # (request.json, input(), sys.argv, websocket, LLM API calls).
-        # Function parameters are NOT included.  Used by shell-sink checks to avoid
-        # false positives from utility functions whose parameters reach subprocess.
+        # Plain function parameters are NOT included to avoid false positives in
+        # utility functions.  Exception: parameters of ``@tool``-decorated functions
+        # ARE included because the LLM chooses their values at runtime.
         self._source_tainted: set[str] = set()
         # Config-dict tracking: var name → set of string keys in its dict literal.
         self._config_dicts: dict[str, set[str]] = {}
@@ -276,6 +277,13 @@ class _Analyzer(ast.NodeVisitor):
         All parameters — positional, keyword-only, *args, and **kwargs — are
         treated as potentially user-controlled.
 
+        Parameters of ``@tool``-decorated functions are additionally promoted to
+        ``_source_tainted`` because their values are chosen by the LLM at
+        runtime — they are effectively LLM output and must be treated with the
+        same scrutiny as ``request.json`` or ``sys.argv``.  This allows the
+        existing LLM05 checks (shell sinks, exec sinks, HTML sinks, json.loads)
+        to fire automatically for ``@tool`` function bodies.
+
         Also detects ``@tool``-decorated functions whose bodies directly contain
         shell execution sinks (``subprocess.run``, ``os.system``, etc.) and emits
         an LLM08 HIGH finding for each sink found.
@@ -285,15 +293,22 @@ class _Analyzer(ast.NodeVisitor):
             + node.args.args
             + node.args.kwonlyargs
         )
+        is_tool_func = self._has_tool_decorator(node)
         for arg in all_args:
             self._tainted.add(arg.arg)
+            if is_tool_func:
+                self._source_tainted.add(arg.arg)
         if node.args.vararg:
             self._tainted.add(node.args.vararg.arg)
+            if is_tool_func:
+                self._source_tainted.add(node.args.vararg.arg)
         if node.args.kwarg:
             self._tainted.add(node.args.kwarg.arg)
+            if is_tool_func:
+                self._source_tainted.add(node.args.kwarg.arg)
 
         # LLM08: @tool decorator + shell sink detection
-        if self._has_tool_decorator(node):
+        if is_tool_func:
             self._check_llm08_tool_shell_sinks(node)
 
         self.generic_visit(node)
@@ -648,6 +663,11 @@ class _Analyzer(ast.NodeVisitor):
         parameters are not included in this set, which avoids false positives in
         utility functions like ``def run_job(cmd): subprocess.Popen(cmd)`` where
         ``cmd`` is a parameter that may not carry attacker-controlled data.
+
+        Parameters of ``@tool``-decorated functions are an exception: they are
+        promoted to ``_source_tainted`` in ``visit_FunctionDef`` because their
+        values are chosen by the LLM at runtime and must be treated as
+        attacker-controlled input.
         """
         if method in _DANGEROUS_SHELL_SINKS:
             if node.args and self._is_source_tainted_node(node.args[0]):
@@ -732,21 +752,27 @@ class _Analyzer(ast.NodeVisitor):
     # LLM08 — Excessive Agency (AST taint-tracked checks)
     # ------------------------------------------------------------------
 
-    def _has_tool_decorator(self, node: ast.FunctionDef) -> bool:
+    @staticmethod
+    def _has_tool_decorator(node: ast.FunctionDef) -> bool:
         """Return True if *node* is decorated with ``@tool`` (any framework).
 
-        Recognises both the bare ``@tool`` form and the called form
-        ``@tool('Shell Tool', args_schema=…)`` used by LangChain and CrewAI.
+        Recognises:
+        * ``@tool`` — bare decorator name
+        * ``@tool(...)`` / ``@tool('Name', args_schema=…)`` — called decorator
+        * ``@module.tool(...)`` — attribute form (e.g. ``@langchain.tools.tool``)
         """
         for decorator in node.decorator_list:
+            # @tool
             if isinstance(decorator, ast.Name) and decorator.id == "tool":
                 return True
-            if (
-                isinstance(decorator, ast.Call)
-                and isinstance(decorator.func, ast.Name)
-                and decorator.func.id == "tool"
-            ):
-                return True
+            # @tool(...) or @tool('Name', ...)
+            if isinstance(decorator, ast.Call):
+                func = decorator.func
+                if isinstance(func, ast.Name) and func.id == "tool":
+                    return True
+                # @module.tool(...)
+                if isinstance(func, ast.Attribute) and func.attr == "tool":
+                    return True
         return False
 
     def _check_llm08_tool_shell_sinks(self, node: ast.FunctionDef) -> None:
@@ -1187,6 +1213,7 @@ class _TaintCollector(ast.NodeVisitor):
 
     def __init__(self) -> None:
         self.tainted: set[str] = set()
+        self.source_tainted: set[str] = set()
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
         all_args = (
@@ -1194,12 +1221,19 @@ class _TaintCollector(ast.NodeVisitor):
             + node.args.args
             + node.args.kwonlyargs
         )
+        is_tool_func = _Analyzer._has_tool_decorator(node)
         for arg in all_args:
             self.tainted.add(arg.arg)
+            if is_tool_func:
+                self.source_tainted.add(arg.arg)
         if node.args.vararg:
             self.tainted.add(node.args.vararg.arg)
+            if is_tool_func:
+                self.source_tainted.add(node.args.vararg.arg)
         if node.args.kwarg:
             self.tainted.add(node.args.kwarg.arg)
+            if is_tool_func:
+                self.source_tainted.add(node.args.kwarg.arg)
         self.generic_visit(node)
 
     visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
