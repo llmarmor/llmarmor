@@ -23,6 +23,7 @@ across Python files, config files, notebooks, and more.
 - [Quick Start](#quick-start)
 - [CLI Reference](#cli-reference)
 - [Scan Modes](#scan-modes)
+- [Severity Levels](#severity-levels)
 - [Output Formats](#output-formats)
 - [File Type Support](#file-type-support)
 - [Suppressing False Positives](#suppressing-false-positives)
@@ -234,6 +235,39 @@ llmarmor scan ./src --verbose        # short form: -v
 Shows **all findings** that were detected, including INFO and LOW severity.
 Useful for getting a complete picture of potential risks, security audits,
 and generating comprehensive reports.
+
+---
+
+## Severity Levels
+
+LLM Armor classifies every finding into one of five severity levels. The level
+determines whether the finding is shown in terminal output by default, what exit
+code the process returns, and what action you should take before merging.
+
+| Level | Icon | Meaning | User Action | Exit Code | Shown By Default |
+|-------|------|---------|-------------|-----------|------------------|
+| **CRITICAL** | 🔴 | Confirmed high-impact vulnerability — real secrets in source code, tainted user input passed to `eval()`/`exec()`/shell commands, or attacker-controlled dynamic dispatch via `globals()` | Must fix before merge | `2` | ✅ Yes |
+| **HIGH** | 🟠 | High-confidence security issue — prompt injection via string interpolation, SQL/HTML injection from LLM output, wildcard tool access, or dangerous tool classes | Should fix before merge | `1` | ✅ Yes |
+| **MEDIUM** | 🟡 | Likely issue requiring attention — missing `max_tokens` on LLM API calls, disabled human-in-the-loop approval, broad filesystem tool access, or strict-mode promotions | Fix recommended | `1` | ✅ Yes |
+| **LOW** | 🔵 | Possible issue worth reviewing — unsanitized user input in user-role messages, unvalidated `json.loads()` of LLM output, or broad agent tool descriptions | Review and decide | `0` | ❌ `--verbose` |
+| **INFO** | ⚪ | Informational observation — hardcoded system prompts in source code, eval/test context downgrades, or plain variable assignments without interpolation | No action required | `0` | ❌ `--verbose` |
+
+**Exit code summary:**
+
+- **`0`** — No findings at MEDIUM or above (clean scan, or only LOW/INFO findings).
+- **`1`** — At least one HIGH or MEDIUM finding was detected.
+- **`2`** — At least one CRITICAL finding — the scan found a confirmed vulnerability.
+
+LOW and INFO findings are always detected internally but hidden from terminal
+output unless `--verbose` is passed. In `--strict` mode, several LOW and INFO
+findings are promoted to MEDIUM (see the [Scan Modes](#scan-modes) section for
+the full promotion table).
+
+**SARIF severity mapping** (for GitHub Code Scanning integration):
+
+- CRITICAL and HIGH → SARIF `error`
+- MEDIUM → SARIF `warning`
+- LOW and INFO → SARIF `note`
 
 ---
 
