@@ -656,8 +656,7 @@ print(f"Total findings: {report['meta']['summary']['total']}")
 | `1` | At least one HIGH or MEDIUM finding detected |
 | `2` | At least one CRITICAL finding detected — must fix immediately |
 
-This mirrors the convention used by `semgrep` and `bandit`, making it easy to
-fail CI/CD pipelines on security findings:
+This makes it easy to fail CI/CD pipelines on security findings:
 
 ```bash
 llmarmor scan ./src; echo "Exit code: $?"
