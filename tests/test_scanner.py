@@ -3279,7 +3279,12 @@ class TestExitCodes:
 
 
 class TestSARIFFormat:
-    """Tests for SARIF 2.1.0 output format."""
+    """Tests for SARIF 2.1.0 output format.
+
+    SARIF, like JSON, writes to stdout via print() for clean machine-readable
+    output. Tests use Console(file=StringIO()) to suppress any Rich terminal
+    output and capsys to capture the actual SARIF JSON from stdout.
+    """
 
     _SAMPLE_FINDINGS = [
         {
@@ -3302,38 +3307,37 @@ class TestSARIFFormat:
         },
     ]
 
-    def test_sarif_output_is_valid_json(self, capsys):
-        import json as _json
-        from io import StringIO
+    def _render_sarif(self, findings, verbose=True):
+        """Helper: render findings as SARIF, returning the Console (for Rich output)."""
+        import io
         from rich.console import Console
         from llmarmor.formatters import render
 
-        console = Console(file=StringIO(), width=120)
-        render(self._SAMPLE_FINDINGS, fmt="sarif", console=console, scan_path="/app", verbose=True)
-        output = capsys.readouterr().out
-        parsed = _json.loads(output)
+        # Console(file=StringIO()) suppresses Rich terminal output.
+        # The SARIF JSON goes to stdout via print(), captured by capsys.
+        console = Console(file=io.StringIO(), width=120)
+        render(findings, fmt="sarif", console=console, scan_path="/app", verbose=verbose)
+        return console
+
+    def test_sarif_output_is_valid_json(self, capsys):
+        import json as _json
+
+        self._render_sarif(self._SAMPLE_FINDINGS)
+        parsed = _json.loads(capsys.readouterr().out)
         assert parsed["version"] == "2.1.0"
         assert "$schema" in parsed
 
     def test_sarif_has_correct_schema(self, capsys):
         import json as _json
-        from io import StringIO
-        from rich.console import Console
-        from llmarmor.formatters import render
 
-        console = Console(file=StringIO(), width=120)
-        render(self._SAMPLE_FINDINGS, fmt="sarif", console=console, scan_path="/app", verbose=True)
+        self._render_sarif(self._SAMPLE_FINDINGS)
         parsed = _json.loads(capsys.readouterr().out)
         assert "sarif-schema-2.1.0" in parsed["$schema"]
 
     def test_sarif_severity_mapping(self, capsys):
         import json as _json
-        from io import StringIO
-        from rich.console import Console
-        from llmarmor.formatters import render
 
-        console = Console(file=StringIO(), width=120)
-        render(self._SAMPLE_FINDINGS, fmt="sarif", console=console, scan_path="/app", verbose=True)
+        self._render_sarif(self._SAMPLE_FINDINGS)
         parsed = _json.loads(capsys.readouterr().out)
         results = parsed["runs"][0]["results"]
 
@@ -3344,9 +3348,6 @@ class TestSARIFFormat:
 
     def test_sarif_filters_info_when_not_verbose(self, capsys):
         import json as _json
-        from io import StringIO
-        from rich.console import Console
-        from llmarmor.formatters import render
 
         findings = [
             {
@@ -3359,21 +3360,16 @@ class TestSARIFFormat:
                 "fix_suggestion": "Use env vars.",
             }
         ]
-        console = Console(file=StringIO(), width=120)
-        render(findings, fmt="sarif", console=console, scan_path="/app", verbose=False)
+        self._render_sarif(findings, verbose=False)
         parsed = _json.loads(capsys.readouterr().out)
         results = parsed["runs"][0]["results"]
         assert results == [], "INFO findings must be filtered in non-verbose SARIF output"
 
     def test_sarif_tool_name_and_version(self, capsys):
         import json as _json
-        from io import StringIO
-        from rich.console import Console
-        from llmarmor.formatters import render
         from llmarmor import __version__
 
-        console = Console(file=StringIO(), width=120)
-        render(self._SAMPLE_FINDINGS, fmt="sarif", console=console, scan_path="/app", verbose=True)
+        self._render_sarif(self._SAMPLE_FINDINGS)
         parsed = _json.loads(capsys.readouterr().out)
         driver = parsed["runs"][0]["tool"]["driver"]
         assert driver["name"] == "LLM Armor"

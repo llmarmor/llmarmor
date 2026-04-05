@@ -1,13 +1,18 @@
 """Core scanning engine for LLM Armor."""
 
+from __future__ import annotations
+
 import fnmatch
 import re
 import warnings
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from llmarmor import ast_analysis as _ast
 from llmarmor.rules import get_rules
+
+if TYPE_CHECKING:
+    from llmarmor.config import LLMArmorConfig
 
 _SKIP_DIRS = {
     ".git",
@@ -87,7 +92,7 @@ def _is_suppressed(lines: list[str], line_num: int, rule_id: str) -> bool:
     return False
 
 
-def run_scan(path: str, strict: bool = False, config: "Optional[object]" = None) -> list[dict]:
+def run_scan(path: str, strict: bool = False, config: Optional[LLMArmorConfig] = None) -> list[dict]:
     """Scan a directory for LLM security vulnerabilities.
 
     Walks *path* recursively, checks every supported file against all registered
@@ -141,14 +146,14 @@ def run_scan(path: str, strict: bool = False, config: "Optional[object]" = None)
     return findings
 
 
-def _apply_config(findings: list[dict], config: object) -> list[dict]:
+def _apply_config(findings: list[dict], config: LLMArmorConfig) -> list[dict]:
     """Apply rule enable/disable and severity overrides from *config*."""
     result: list[dict] = []
     for f in findings:
         rule_id = f["rule_id"]
-        if not config.is_rule_enabled(rule_id):  # type: ignore[attr-defined]
+        if not config.is_rule_enabled(rule_id):
             continue
-        override = config.rule_severity_override(rule_id)  # type: ignore[attr-defined]
+        override = config.rule_severity_override(rule_id)
         if override:
             f = {**f, "severity": override}
         result.append(f)
