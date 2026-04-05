@@ -244,13 +244,13 @@ LLM Armor classifies every finding into one of five severity levels. The level
 determines whether the finding is shown in terminal output by default, what exit
 code the process returns, and what action you should take before merging.
 
-| Level | Icon | Meaning | User Action | Exit Code | Shown By Default |
+| Level | Icon | Meaning | Exit Code | Shown By Default |
 |-------|------|---------|-------------|-----------|------------------|
-| **CRITICAL** | 🔴 | Confirmed high-impact vulnerability — real secrets in source code, tainted user input passed to `eval()`/`exec()`/shell commands, or attacker-controlled dynamic dispatch via `globals()` | Must fix before merge | `2` | ✅ Yes |
-| **HIGH** | 🟠 | High-confidence security issue — prompt injection via string interpolation, SQL/HTML injection from LLM output, wildcard tool access, or dangerous tool classes | Should fix before merge | `1` | ✅ Yes |
-| **MEDIUM** | 🟡 | Likely issue requiring attention — missing `max_tokens` on LLM API calls, disabled human-in-the-loop approval, broad filesystem tool access, or strict-mode promotions | Fix recommended | `1` | ✅ Yes |
-| **LOW** | 🔵 | Possible issue worth reviewing — unsanitized user input in user-role messages, unvalidated `json.loads()` of LLM output, or broad agent tool descriptions | Review and decide | `0` | ❌ `--verbose` |
-| **INFO** | ⚪ | Informational observation — hardcoded system prompts in source code, eval/test context downgrades, or plain variable assignments without interpolation | No action required | `0` | ❌ `--verbose` |
+| **CRITICAL** | 🔴 | Confirmed high-impact vulnerability — real secrets in source code, tainted user input passed to `eval()`/`exec()`/shell commands, or attacker-controlled dynamic dispatch via `globals()` | `2` | ✅ Yes |
+| **HIGH** | 🟠 | High-confidence security issue — prompt injection via string interpolation, SQL/HTML injection from LLM output, wildcard tool access, or dangerous tool classes | `1` | ✅ Yes |
+| **MEDIUM** | 🟡 | Likely issue requiring attention — missing `max_tokens` on LLM API calls, disabled human-in-the-loop approval, broad filesystem tool access, or strict-mode promotions | `1` | ✅ Yes |
+| **LOW** | 🔵 | Possible issue worth reviewing — unsanitized user input in user-role messages, unvalidated `json.loads()` of LLM output, or broad agent tool descriptions | `0` | ❌ `--verbose` |
+| **INFO** | ⚪ | Informational observation — hardcoded system prompts in source code, eval/test context downgrades, or plain variable assignments without interpolation | `0` | ❌ `--verbose` |
 
 **Exit code summary:**
 
