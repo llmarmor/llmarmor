@@ -32,6 +32,7 @@ On ``SyntaxError`` (or any other parse failure), both values are empty.
 """
 
 import ast
+import collections
 from pathlib import Path as _Path
 
 _LLM01 = "LLM01"
@@ -274,6 +275,10 @@ class _Analyzer(ast.NodeVisitor):
         Function boundaries are where external data enters the program.
         All parameters — positional, keyword-only, *args, and **kwargs — are
         treated as potentially user-controlled.
+
+        Also detects ``@tool``-decorated functions whose bodies directly contain
+        shell execution sinks (``subprocess.run``, ``os.system``, etc.) and emits
+        an LLM08 HIGH finding for each sink found.
         """
         all_args = (
             node.args.posonlyargs
@@ -286,6 +291,11 @@ class _Analyzer(ast.NodeVisitor):
             self._tainted.add(node.args.vararg.arg)
         if node.args.kwarg:
             self._tainted.add(node.args.kwarg.arg)
+
+        # LLM08: @tool decorator + shell sink detection
+        if self._has_tool_decorator(node):
+            self._check_llm08_tool_shell_sinks(node)
+
         self.generic_visit(node)
 
     # Async functions share the same taint-seeding logic.
@@ -721,6 +731,63 @@ class _Analyzer(ast.NodeVisitor):
     # ------------------------------------------------------------------
     # LLM08 — Excessive Agency (AST taint-tracked checks)
     # ------------------------------------------------------------------
+
+    def _has_tool_decorator(self, node: ast.FunctionDef) -> bool:
+        """Return True if *node* is decorated with ``@tool`` (any framework).
+
+        Recognises both the bare ``@tool`` form and the called form
+        ``@tool('Shell Tool', args_schema=…)`` used by LangChain and CrewAI.
+        """
+        for decorator in node.decorator_list:
+            if isinstance(decorator, ast.Name) and decorator.id == "tool":
+                return True
+            if (
+                isinstance(decorator, ast.Call)
+                and isinstance(decorator.func, ast.Name)
+                and decorator.func.id == "tool"
+            ):
+                return True
+        return False
+
+    def _check_llm08_tool_shell_sinks(self, node: ast.FunctionDef) -> None:
+        """Emit HIGH LLM08 finding for each shell sink inside a ``@tool``-decorated function.
+
+        Walks the body of *node* looking for ``subprocess.*`` or ``os.system`` /
+        ``os.popen`` calls.  The traversal stops at nested function/class
+        boundaries to avoid false positives from helper functions defined inside
+        the tool that are not themselves LLM-invocable.
+        """
+        queue: collections.deque[ast.AST] = collections.deque(ast.iter_child_nodes(node))
+        while queue:
+            child = queue.popleft()
+            # Do not recurse into nested function/class definitions — shell
+            # sinks in those scopes are not directly invoked by the @tool body.
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            if isinstance(child, ast.Call):
+                method = _attr_chain(child.func)
+                if method in _DANGEROUS_SHELL_SINKS:
+                    self.findings.append(
+                        _finding(
+                            _LLM08,
+                            "Excessive Agency",
+                            "HIGH",
+                            self.filepath,
+                            child.lineno,
+                            (
+                                f"@tool-decorated function '{node.name}' contains "
+                                f"{method}() call — this grants the LLM agent "
+                                "OS-level command execution capability."
+                            ),
+                            (
+                                "Avoid placing shell or subprocess calls inside "
+                                "@tool-decorated functions. If shell access is required, "
+                                "apply strict input validation and sandbox the execution "
+                                "environment."
+                            ),
+                        )
+                    )
+            queue.extend(ast.iter_child_nodes(child))
 
     def _check_llm08_dynamic_dispatch(self, node: ast.Call, method: str) -> bool:
         """Return True (and emit a finding) for taint-tracked dynamic dispatch patterns.
