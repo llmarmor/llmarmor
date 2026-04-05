@@ -401,6 +401,10 @@ The following directories are automatically skipped during scanning:
   `text`, `content`) passed to dangerous sinks
 - AST: taint-tracked detection — flags any tainted variable (from any user-controlled source)
   passed to dangerous sinks without the name-heuristic requirement
+- `@tool`-decorated function parameters (LangChain, CrewAI, or any `@tool` framework) are
+  treated as LLM output (source-tainted) — the LLM chooses their values at runtime, so sinks
+  inside `@tool` bodies are flagged automatically: `subprocess.run(param)` → CRITICAL,
+  `eval(param)` → CRITICAL, `Markup(param)` → HIGH, `json.loads(param)` → INFO
 - Dangerous sinks: `eval()`, `exec()`, `compile()` → CRITICAL; `subprocess.run()`, `os.system()` → CRITICAL;
   `Markup()`, `render_template_string()`, `mark_safe()` → HIGH; SQL f-string interpolation → HIGH;
   `json.loads()` without schema validation → INFO (normal) / MEDIUM (strict)
@@ -456,6 +460,7 @@ on the same line, only one finding is reported.
 | CLI arguments | `data = sys.argv[1]` |
 | WebSocket | `data = websocket.receive()` |
 | Function parameter | `def handle(user_msg):` |
+| `@tool` parameter | `@tool def my_tool(command: str):` |
 
 | Not tainted (safe sources) | Example |
 |---|---|
