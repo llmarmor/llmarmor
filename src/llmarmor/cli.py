@@ -1,5 +1,7 @@
 """CLI entry point for LLM Armor."""
 
+import sys
+
 import click
 from rich.console import Console
 from rich.panel import Panel
@@ -21,6 +23,21 @@ def _build_mode(strict: bool, verbose: bool) -> str:
     if verbose:
         return "verbose"
     return "normal"
+
+
+def _compute_exit_code(findings: list[dict]) -> int:
+    """Return an exit code based on the worst finding severity.
+    
+    - ``0`` — no findings at or above MEDIUM (clean or INFO/LOW only)
+    - ``1`` — at least one HIGH or MEDIUM finding
+    - ``2`` — at least one CRITICAL finding (must fix immediately)
+    """
+    severities = {f["severity"] for f in findings}
+    if "CRITICAL" in severities:
+        return 2
+    if severities & {"HIGH", "MEDIUM"}:
+        return 1
+    return 0
 
 
 @click.group()
@@ -58,14 +75,33 @@ def main() -> None:
     default="grouped",
     show_default=True,
     type=click.Choice(VALID_FORMATS, case_sensitive=False),
-    help="Output format: grouped (default), flat, json, md/markdown.",
+    help="Output format: grouped (default), flat, json, md/markdown, sarif.",
 )
-def scan(path: str, strict: bool, verbose: bool, fmt: str) -> None:
+@click.option(
+    "--config",
+    "config_path",
+    default=None,
+    type=click.Path(exists=True),
+    help=(
+        "Path to a .llmarmor.yaml configuration file. "
+        "Auto-detected in the scan root if not specified."
+    ),
+)
+def scan(path: str, strict: bool, verbose: bool, fmt: str, config_path: str | None) -> None:
     """Scan PATH for LLM security vulnerabilities."""
+    from llmarmor.config import load_config
+
+    # Load configuration file (auto-detected or explicit).
+    cfg = load_config(config_path=config_path, scan_root=path)
+    if cfg is not None:
+        # CLI flags override config file values.
+        if not strict:
+            strict = cfg.strict
+
     mode = _build_mode(strict, verbose)
 
-    # For non-JSON/markdown formats, show the header panel.
-    if fmt not in ("json", "md", "markdown"):
+    # For non-JSON/markdown/SARIF formats, show the header panel.
+    if fmt not in ("json", "md", "markdown", "sarif"):
         mode_parts = []
         if strict:
             mode_parts.append("[bold yellow](strict)[/bold yellow]")
@@ -81,9 +117,11 @@ def scan(path: str, strict: bool, verbose: bool, fmt: str) -> None:
             )
         )
 
-    findings = run_scan(path, strict=strict)
+    findings = run_scan(path, strict=strict, config=cfg)
 
     render(findings, fmt=fmt, console=console, scan_path=path, verbose=verbose, mode=mode)
+
+    sys.exit(_compute_exit_code(findings))
 
 
 @main.command()

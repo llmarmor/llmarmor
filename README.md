@@ -25,6 +25,7 @@ across Python files, config files, notebooks, and more.
 - [Scan Modes](#scan-modes)
 - [Output Formats](#output-formats)
 - [File Type Support](#file-type-support)
+- [Suppressing False Positives](#suppressing-false-positives)
 - [OWASP LLM Top 10 Coverage](#owasp-llm-top-10-coverage)
 - [How It Works](#how-it-works--dual-layer-analysis)
 - [CI/CD Integration](#cicd-integration)
@@ -107,7 +108,9 @@ Options:
                      By default, only CRITICAL, HIGH, and MEDIUM findings
                      are displayed (they are still detected internally).
   -f, --format FMT   Output format. [default: grouped]
-                     Choices: grouped, flat, json, md, markdown
+                     Choices: grouped, flat, json, md, markdown, sarif
+  --config PATH      Path to a .llmarmor.yaml configuration file.
+                     Auto-detected in the scan root if not specified.
   --help             Show this message and exit.
 ```
 
@@ -132,8 +135,14 @@ llmarmor scan ./src -f flat
 # JSON output to file
 llmarmor scan ./src -f json > findings.json
 
+# SARIF output for GitHub Code Scanning
+llmarmor scan ./src -f sarif > results.sarif
+
 # Markdown report
 llmarmor scan ./src -f md > SECURITY_REPORT.md
+
+# Use a configuration file
+llmarmor scan ./src --config .llmarmor.yaml
 
 # Combine strict + verbose + JSON for full CI report
 llmarmor scan ./src --strict --verbose -f json > full-report.json
@@ -326,6 +335,30 @@ or sharing with stakeholders.
 llmarmor scan ./src -f md > SECURITY_REPORT.md
 ```
 
+### SARIF (`sarif`)
+
+[SARIF 2.1.0](https://sarifweb.azurewebsites.net/) output for GitHub Code
+Scanning, VS Code SARIF Viewer, and security dashboards.
+
+```bash
+llmarmor scan ./src -f sarif > results.sarif
+```
+
+Upload to GitHub Code Scanning in your workflow:
+
+```yaml
+- name: LLM Armor SARIF scan
+  run: llmarmor scan . -f sarif > llmarmor.sarif
+
+- name: Upload SARIF
+  uses: github/codeql-action/upload-sarif@v3
+  with:
+    sarif_file: llmarmor.sarif
+```
+
+Severity mapping in SARIF: CRITICAL/HIGH → `error`, MEDIUM → `warning`,
+LOW/INFO → `note`.
+
 ---
 
 ## File Type Support
@@ -361,21 +394,22 @@ The following directories are automatically skipped during scanning:
 
 ## OWASP LLM Top 10 Coverage
 
-| OWASP Risk | Rule | Coverage |
-|---|---|---|
-| LLM01 | Prompt Injection — unsanitized user input in LLM prompts | 🟢 Strong |
-| LLM02 | Sensitive Info Disclosure — hardcoded API keys | 🟢 Strong |
-| LLM05 | Improper Output Handling — LLM output in eval/exec/HTML/SQL | 🟢 Strong |
-| LLM07 | System Prompt Leakage — prompts in source/config files | 🟢 Strong |
-| LLM08 | Excessive Agency — over-permissioned LLM actions | 🟢 Strong |
-| LLM10 | Unbounded Consumption — missing rate limits/max\_tokens | 🟢 Strong |
-| LLM03 | Supply Chain Vulnerabilities | 🔴 Out of scope |
-| LLM04 | Data and Model Poisoning | 🔴 Out of scope |
-| LLM06 | Insecure Plugin Design | 🔴 Out of scope |
-| LLM09 | Misinformation | 🔴 Out of scope |
+| OWASP Risk | Rule | Coverage | What's Detected |
+|---|---|---|---|
+| LLM01 | Prompt Injection | 🟢 Strong | Regex + AST taint analysis across 6 injection vectors (f-string, .format(), %-format, concatenation, LangChain templates, aliased vars); role-aware detection distinguishes system from user role |
+| LLM02 | Sensitive Info Disclosure | 🟡 Partial | 4 LLM API key patterns (OpenAI, Anthropic, Google, HuggingFace) across all file types; does not cover PII, DB connection strings, AWS/Azure credentials, or JWT tokens |
+| LLM05 | Improper Output Handling | 🟡 Partial | eval/exec/shell/SQL/HTML sinks with variable-name heuristics; AST taint from LLM API calls; does not track taint through attribute chains like `response.choices[0].message.content` |
+| LLM06 | Insecure Plugin Design | 🟡 Partial | @tool-decorated functions with dangerous sinks (eval/exec/shell); detects dangerous tool classes (ShellTool, PythonREPLTool, CodeInterpreterTool) |
+| LLM07 | System Prompt Leakage | 🟡 Partial | Hardcoded prompts in source code (regex + AST multi-line detection); does not detect prompts in API responses, log output, or error messages |
+| LLM08 | Excessive Agency | 🟢 Strong | 8 pattern categories: wildcard tool access, dangerous tool classes, disabled approval gates, dynamic dispatch (globals/getattr), shell interpreter sinks, broad tool descriptions, agent loop patterns, @tool sinks |
+| LLM10 | Unbounded Consumption | 🟡 Partial | Missing max_tokens on LLM API calls; does not check timeouts, rate limits, retry bounds, or streaming limits |
+| LLM03 | Supply Chain Vulnerabilities | 🔴 Out of scope | Requires dependency analysis and model provenance verification — not detectable by static analysis |
+| LLM04 | Data and Model Poisoning | 🔴 Out of scope | Requires runtime monitoring and training pipeline analysis |
+| LLM09 | Misinformation | 🔴 Out of scope | Requires factual verification at runtime — not detectable by static analysis |
 
 **Coverage levels:**
-- 🟢 **Strong** — dual-layer detection: regex patterns + AST-based taint analysis
+- 🟢 **Strong** — dual-layer detection (regex + AST taint analysis), multiple pattern categories, high confidence
+- 🟡 **Partial** — single-layer detection or limited pattern coverage; PRs welcome to expand
 - 🔴 **Out of scope** — not detectable by static analysis alone
 
 ### What Each Rule Detects
@@ -477,6 +511,81 @@ through function calls, so `clean = sanitize(raw)` does not taint `clean`.
 
 ---
 
+## Suppressing False Positives
+
+### Inline Suppression
+
+Add a `# llmarmor: ignore` comment to suppress a finding on a specific line.
+You can also scope suppression to a specific rule with `# llmarmor: ignore[RULE_ID]`:
+
+```python
+# Suppress all rules on the next line
+# llmarmor: ignore
+response = client.chat.completions.create(model="gpt-4", messages=messages)
+
+# Suppress only LLM07 on this line
+SYSTEM_PROMPT = "You are a helpful assistant."  # llmarmor: ignore[LLM07]
+
+# Suppress multiple rules
+result = eval(user_code)  # llmarmor: ignore[LLM05,LLM01]
+```
+
+Inline suppression works for both regex and AST findings. The comment can be
+placed on the finding's own line or on the line immediately above it.
+
+### `.llmarmorignore`
+
+Create a `.llmarmorignore` file in your project root to skip files or
+directories using gitignore-style glob patterns:
+
+```
+# .llmarmorignore
+
+# Skip test fixtures that intentionally contain vulnerable patterns
+tests/fixtures/**
+
+# Skip generated files
+build/**
+dist/**
+
+# Skip specific files
+scripts/dev_seed.py
+```
+
+### Configuration File
+
+Create a `.llmarmor.yaml` file in your project root (or pass it with
+`--config`) to configure scan behaviour per project:
+
+```yaml
+# .llmarmor.yaml
+
+# Minimum severity to report (CRITICAL, HIGH, MEDIUM, LOW, INFO)
+severity_threshold: MEDIUM
+
+# Enable strict mode by default
+strict: false
+
+# Per-rule configuration
+rules:
+  LLM01:
+    enabled: true
+    severity: HIGH         # Override default severity for this rule
+  LLM07:
+    enabled: false         # Disable this rule entirely for this project
+
+# Additional paths to exclude (gitignore-style globs)
+exclude_paths:
+  - "tests/**"
+  - "scripts/dev_*"
+  - "docs/**"
+```
+
+CLI flags always take precedence over config file values. The config file is
+auto-detected in the scan root directory if `--config` is not specified.
+
+---
+
 ## CI/CD Integration
 
 ### GitHub Actions
@@ -543,8 +652,18 @@ print(f"Total findings: {report['meta']['summary']['total']}")
 
 | Code | Meaning |
 |---|---|
-| `0` | Scan completed (findings may be present) |
-| `1` | Error (invalid path, unexpected exception) |
+| `0` | No findings at MEDIUM or above (clean, or only INFO/LOW findings) |
+| `1` | At least one HIGH or MEDIUM finding detected |
+| `2` | At least one CRITICAL finding detected — must fix immediately |
+
+This makes it easy to fail CI/CD pipelines on security findings:
+
+```bash
+llmarmor scan ./src; echo "Exit code: $?"
+# Exit code: 0 — clean
+# Exit code: 1 — medium/high findings
+# Exit code: 2 — critical findings
+```
 
 ---
 
