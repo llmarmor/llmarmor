@@ -12,6 +12,7 @@ Severity mapping
 CRITICAL  globals()[fn_name]() / eval(fn_name) — dynamic dispatch from LLM tool call
 HIGH      tools=["*"] — wildcard tool access
 HIGH      ShellTool / PythonREPLTool / CodeInterpreterTool
+HIGH      subprocess.run(['powershell'/'bash'/'cmd'/'sh', ...]) — shell interpreter invocation
 HIGH      getattr(module, llm_name)() — dynamic dispatch via getattr
 MEDIUM    auto_approve=True / human_in_the_loop=False
 MEDIUM    FileManagementToolkit / WriteFileTool
@@ -42,6 +43,14 @@ _WILDCARD_TOOLS = re.compile(
 # Dangerous tool classes — HIGH
 _DANGEROUS_TOOLS = re.compile(
     r"\b(ShellTool|PythonREPLTool|CodeInterpreterTool|BashTool|TerminalTool)\s*\(",
+)
+
+# subprocess/os called with a shell interpreter executable — HIGH
+# Matches: subprocess.run(['powershell', ...]), subprocess.Popen(['bash', ...]),
+#          subprocess.call('sh', ...), os.system('cmd ...'), etc.
+_SUBPROCESS_SHELL_EXEC = re.compile(
+    r"\bsubprocess\.\w+\s*\(\s*\[?\s*['\"](?:powershell|bash|sh|cmd|zsh|fish|pwsh)['\"]",
+    re.IGNORECASE,
 )
 
 # Dynamic dispatch via getattr with variable function name — HIGH
@@ -96,6 +105,12 @@ _FIX_WILDCARD = (
 _FIX_DANGEROUS_TOOL = (
     "Avoid granting LLM agents access to shell execution or REPL tools unless strictly "
     "necessary. Prefer purpose-built, restricted tools and apply sandboxing."
+)
+_FIX_SUBPROCESS_SHELL_EXEC = (
+    "Avoid passing shell interpreter names (powershell, bash, cmd, sh, etc.) directly "
+    "to subprocess calls in agent-accessible code. If shell execution is required, "
+    "validate and restrict the command to a strict allowlist and avoid exposing this "
+    "capability to LLM agents."
 )
 _FIX_GETATTR = (
     "Never dispatch function calls with LLM-provided names via getattr(). "
@@ -188,6 +203,26 @@ def check_excessive_agency(
                         "command execution."
                     ),
                     "fix_suggestion": _FIX_DANGEROUS_TOOL,
+                }
+            )
+            continue
+
+        # --- HIGH: subprocess with shell interpreter executable ---
+        if _SUBPROCESS_SHELL_EXEC.search(line):
+            findings.append(
+                {
+                    "rule_id": RULE_ID,
+                    "rule_name": RULE_NAME,
+                    "severity": "HIGH",
+                    "filepath": str(filepath),
+                    "line": i + 1,
+                    "description": (
+                        "subprocess is called with a shell interpreter "
+                        "(powershell, bash, cmd, sh, etc.) as the first argument. "
+                        "If this code is reachable from an LLM agent tool, it grants "
+                        "OS-level command execution capability."
+                    ),
+                    "fix_suggestion": _FIX_SUBPROCESS_SHELL_EXEC,
                 }
             )
             continue

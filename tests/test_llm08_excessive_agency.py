@@ -7,6 +7,13 @@ import pytest
 from llmarmor.rules.llm08_excessive_agency import check_excessive_agency
 
 
+def _analyze(tmp_path: Path, code: str, filename: str = "app.py") -> dict:
+    """Helper that runs AST-based analysis via the public ``analyze()`` entry point."""
+    from llmarmor.ast_analysis import analyze
+
+    return analyze(str(tmp_path / filename), code)
+
+
 class TestLLM08ExcessiveAgency:
     """Tests for the check_excessive_agency regex rule."""
 
@@ -240,3 +247,144 @@ class TestLLM08ExcessiveAgency:
             assert "line" in f
             assert "description" in f
             assert "fix_suggestion" in f
+
+    # ------------------------------------------------------------------
+    # HIGH: subprocess with shell interpreter executable (regex)
+    # ------------------------------------------------------------------
+
+    def test_subprocess_powershell_flagged_as_high(self, tmp_path: Path):
+        """subprocess.run(['powershell', ...]) must produce a HIGH finding."""
+        code = "result = subprocess.run(['powershell', '-Command', cmd])\n"
+        findings = check_excessive_agency(str(tmp_path / "app.py"), code)
+        assert any(
+            f["rule_id"] == "LLM08" and f["severity"] == "HIGH"
+            for f in findings
+        ), f"Expected HIGH finding for subprocess.run(['powershell', ...]); got: {findings}"
+
+    def test_subprocess_bash_flagged_as_high(self, tmp_path: Path):
+        """subprocess.run(['bash', ...]) must produce a HIGH finding."""
+        code = "result = subprocess.run(['bash', '-c', cmd])\n"
+        findings = check_excessive_agency(str(tmp_path / "app.py"), code)
+        assert any(
+            f["rule_id"] == "LLM08" and f["severity"] == "HIGH"
+            for f in findings
+        ), f"Expected HIGH finding for subprocess.run(['bash', ...]); got: {findings}"
+
+    def test_subprocess_cmd_flagged_as_high(self, tmp_path: Path):
+        """subprocess.run(['cmd', ...]) must produce a HIGH finding."""
+        code = "result = subprocess.run(['cmd', '/C', cmd])\n"
+        findings = check_excessive_agency(str(tmp_path / "app.py"), code)
+        assert any(
+            f["rule_id"] == "LLM08" and f["severity"] == "HIGH"
+            for f in findings
+        ), f"Expected HIGH finding for subprocess.run(['cmd', ...]); got: {findings}"
+
+    def test_subprocess_sh_flagged_as_high(self, tmp_path: Path):
+        """subprocess.run(['sh', ...]) must produce a HIGH finding."""
+        code = "result = subprocess.run(['sh', '-c', cmd])\n"
+        findings = check_excessive_agency(str(tmp_path / "app.py"), code)
+        assert any(
+            f["rule_id"] == "LLM08" and f["severity"] == "HIGH"
+            for f in findings
+        ), f"Expected HIGH finding for subprocess.run(['sh', ...]); got: {findings}"
+
+    def test_subprocess_popen_powershell_flagged_as_high(self, tmp_path: Path):
+        """subprocess.Popen(['powershell', ...]) must produce a HIGH finding."""
+        code = "proc = subprocess.Popen(['powershell', '-Command', cmd])\n"
+        findings = check_excessive_agency(str(tmp_path / "app.py"), code)
+        assert any(
+            f["rule_id"] == "LLM08" and f["severity"] == "HIGH"
+            for f in findings
+        ), f"Expected HIGH finding for subprocess.Popen(['powershell', ...]); got: {findings}"
+
+    # ------------------------------------------------------------------
+    # HIGH: @tool-decorated function with shell sinks (AST)
+    # ------------------------------------------------------------------
+
+    def test_tool_decorated_subprocess_run_flagged_as_high(self, tmp_path: Path):
+        """@tool function containing subprocess.run() must produce a HIGH LLM08 finding."""
+        code = (
+            "import subprocess\n"
+            "from langchain.tools import tool\n"
+            "\n"
+            "@tool\n"
+            "def shell_tool(command: str) -> str:\n"
+            "    result = subprocess.run(['bash', '-c', command])\n"
+            "    return result.stdout\n"
+        )
+        result = _analyze(tmp_path, code)
+        assert any(
+            f["rule_id"] == "LLM08" and f["severity"] == "HIGH"
+            for f in result["findings"]
+        ), f"Expected HIGH LLM08 finding for @tool + subprocess.run(); got: {result['findings']}"
+
+    def test_tool_decorated_os_system_flagged_as_high(self, tmp_path: Path):
+        """@tool function containing os.system() must produce a HIGH LLM08 finding."""
+        code = (
+            "import os\n"
+            "from langchain.tools import tool\n"
+            "\n"
+            "@tool\n"
+            "def run_cmd(command: str) -> int:\n"
+            "    return os.system(command)\n"
+        )
+        result = _analyze(tmp_path, code)
+        assert any(
+            f["rule_id"] == "LLM08" and f["severity"] == "HIGH"
+            for f in result["findings"]
+        ), f"Expected HIGH LLM08 finding for @tool + os.system(); got: {result['findings']}"
+
+    def test_tool_decorated_subprocess_popen_flagged_as_high(self, tmp_path: Path):
+        """@tool function containing subprocess.Popen() must produce a HIGH LLM08 finding."""
+        code = (
+            "import subprocess\n"
+            "from langchain.tools import tool\n"
+            "\n"
+            "@tool('Shell Tool')\n"
+            "def shell_tool(command: str) -> str:\n"
+            "    proc = subprocess.Popen(command, shell=True)\n"
+            "    return proc.communicate()[0]\n"
+        )
+        result = _analyze(tmp_path, code)
+        assert any(
+            f["rule_id"] == "LLM08" and f["severity"] == "HIGH"
+            for f in result["findings"]
+        ), f"Expected HIGH LLM08 finding for @tool + subprocess.Popen(); got: {result['findings']}"
+
+    def test_tool_decorated_no_shell_sink_not_flagged(self, tmp_path: Path):
+        """@tool function with no shell sinks must NOT produce an LLM08 AST finding."""
+        code = (
+            "from langchain.tools import tool\n"
+            "\n"
+            "@tool\n"
+            "def safe_tool(query: str) -> str:\n"
+            "    return query.upper()\n"
+        )
+        result = _analyze(tmp_path, code)
+        llm08_findings = [
+            f for f in result["findings"]
+            if f["rule_id"] == "LLM08" and f["severity"] == "HIGH"
+        ]
+        assert llm08_findings == [], (
+            f"@tool function without shell sinks should not produce HIGH LLM08 findings; "
+            f"got: {llm08_findings}"
+        )
+
+    def test_non_tool_function_subprocess_not_flagged(self, tmp_path: Path):
+        """Regular (non-@tool) function with subprocess.run() must NOT produce an LLM08 AST finding."""
+        code = (
+            "import subprocess\n"
+            "\n"
+            "def run_job(cmd):\n"
+            "    result = subprocess.run(cmd)\n"
+            "    return result.returncode\n"
+        )
+        result = _analyze(tmp_path, code)
+        llm08_high_findings = [
+            f for f in result["findings"]
+            if f["rule_id"] == "LLM08" and f["severity"] == "HIGH"
+        ]
+        assert llm08_high_findings == [], (
+            f"Non-@tool function with subprocess.run() should not produce HIGH LLM08 AST finding; "
+            f"got: {llm08_high_findings}"
+        )

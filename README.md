@@ -415,6 +415,8 @@ The following directories are automatically skipped during scanning:
 - `globals()[fn_name]()` / `eval(fn_name)` — dynamic dispatch from LLM tool call → CRITICAL
 - `tools=["*"]` — wildcard tool access violating least privilege → HIGH
 - `ShellTool()`, `PythonREPLTool()`, `CodeInterpreterTool()` — shell/code execution capability → HIGH
+- `subprocess.run(['powershell'/'bash'/'cmd'/'sh', ...])` — shell interpreter invocation → HIGH
+- `@tool`-decorated functions (LangChain/CrewAI) whose bodies contain `subprocess.run()`, `os.system()`, or other shell sinks → HIGH
 - `getattr(module, llm_name)()` — AST-taint-tracked dynamic dispatch → CRITICAL (AST) / HIGH (regex)
 - `auto_approve=True`, `human_in_the_loop=False` — disabled approval gates → MEDIUM
 - `FileManagementToolkit()`, `WriteFileTool()` — broad filesystem access → MEDIUM
