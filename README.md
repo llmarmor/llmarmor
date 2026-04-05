@@ -420,7 +420,9 @@ The following directories are automatically skipped during scanning:
 - `tools=["*"]` — wildcard tool access violating least privilege → HIGH
 - `ShellTool()`, `PythonREPLTool()`, `CodeInterpreterTool()` — shell/code execution capability → HIGH
 - `subprocess.run(['powershell'/'bash'/'cmd'/'sh', ...])` — shell interpreter invocation → HIGH
-- `@tool`-decorated functions (LangChain/CrewAI) whose bodies contain `subprocess.run()`, `os.system()`, or other shell sinks → HIGH
+- `@tool`-decorated functions (LangChain, CrewAI, AutoGen, LlamaIndex, Smolagents, Google ADK, MCP, Marvin, ControlFlow),
+  `@function_tool` (OpenAI Agents SDK), `@kernel_function` (Semantic Kernel), `@ai_tool` (Pydantic AI),
+  and `@ai_fn` (Marvin AI) containing shell/subprocess sinks — AST-detected → HIGH
 - `getattr(module, llm_name)()` — AST-taint-tracked dynamic dispatch → CRITICAL (AST) / HIGH (regex)
 - `auto_approve=True`, `human_in_the_loop=False` — disabled approval gates → MEDIUM
 - `FileManagementToolkit()`, `WriteFileTool()` — broad filesystem access → MEDIUM

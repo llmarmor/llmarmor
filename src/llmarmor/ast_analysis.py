@@ -40,6 +40,18 @@ _LLM05 = "LLM05"
 _LLM07 = "LLM07"
 _LLM08 = "LLM08"
 
+# Decorator names that register a function as an LLM-agent-invocable tool.
+# Covers LangChain/CrewAI/AutoGen/LlamaIndex/Smolagents/ADK/MCP (@tool),
+# OpenAI Agents SDK (@function_tool), Microsoft Semantic Kernel (@kernel_function),
+# Pydantic AI (@ai_tool), and Marvin AI (@ai_fn).
+_TOOL_DECORATOR_NAMES: frozenset[str] = frozenset([
+    "tool",              # LangChain, CrewAI, AutoGen, LlamaIndex, Smolagents, Google ADK, MCP, ControlFlow, Marvin (primary)
+    "function_tool",     # OpenAI Agents SDK
+    "kernel_function",   # Microsoft Semantic Kernel
+    "ai_tool",           # Pydantic AI
+    "ai_fn",             # Marvin AI (alternate)
+])
+
 # Root receiver names for objects that are considered safe config/DB sources.
 # Assignments like ``prompt = config.get("x")`` or ``prompt = settings.DEFAULT``
 # are NOT treated as user-controlled.
@@ -754,24 +766,24 @@ class _Analyzer(ast.NodeVisitor):
 
     @staticmethod
     def _has_tool_decorator(node: ast.FunctionDef) -> bool:
-        """Return True if *node* is decorated with ``@tool`` (any framework).
+        """Return True if *node* is decorated with a known tool decorator.
 
-        Recognises:
-        * ``@tool`` — bare decorator name
-        * ``@tool(...)`` / ``@tool('Name', args_schema=…)`` — called decorator
-        * ``@module.tool(...)`` — attribute form (e.g. ``@langchain.tools.tool``)
+        Recognises bare ``@tool``, called ``@tool('Shell Tool', args_schema=…)``,
+        and module-qualified ``@module.tool(...)`` forms across multiple frameworks:
+        LangChain, CrewAI, OpenAI Agents SDK, Semantic Kernel, Pydantic AI, etc.
         """
         for decorator in node.decorator_list:
-            # @tool
-            if isinstance(decorator, ast.Name) and decorator.id == "tool":
+            # Bare decorator: @tool, @function_tool, @kernel_function, etc.
+            if isinstance(decorator, ast.Name) and decorator.id in _TOOL_DECORATOR_NAMES:
                 return True
-            # @tool(...) or @tool('Name', ...)
+            # Called decorator: @tool('Name', ...), @function_tool(...), etc.
             if isinstance(decorator, ast.Call):
                 func = decorator.func
-                if isinstance(func, ast.Name) and func.id == "tool":
+                # @tool(...) form — func is ast.Name
+                if isinstance(func, ast.Name) and func.id in _TOOL_DECORATOR_NAMES:
                     return True
-                # @module.tool(...)
-                if isinstance(func, ast.Attribute) and func.attr == "tool":
+                # @module.tool(...) form — func is ast.Attribute
+                if isinstance(func, ast.Attribute) and func.attr in _TOOL_DECORATOR_NAMES:
                     return True
         return False
 
