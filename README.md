@@ -31,6 +31,7 @@ across Python files, config files, notebooks, and more.
 - [How It Works](#how-it-works--dual-layer-analysis)
 - [CI/CD Integration](#cicd-integration)
 - [Contributing](#contributing)
+- [Changelog](#changelog)
 - [Links](#links)
 - [License](#license)
 
@@ -108,8 +109,15 @@ Options:
   -v, --verbose      Show all findings including INFO and LOW severity.
                      By default, only CRITICAL, HIGH, and MEDIUM findings
                      are displayed (they are still detected internally).
+  -q, --quiet        Suppress all output. Only the exit code communicates the
+                     result. Useful in CI pipelines where output is not needed.
+                     Mutually exclusive with --verbose.
   -f, --format FMT   Output format. [default: grouped]
                      Choices: grouped, flat, json, md, markdown, sarif
+  -o, --output PATH  Write formatter output to PATH instead of stdout.
+                     For grouped/flat formats, plain text is written.
+                     For json/md/sarif, output is written directly.
+                     A confirmation line is printed to stderr unless --quiet.
   --config PATH      Path to a .llmarmor.yaml configuration file.
                      Auto-detected in the scan root if not specified.
   --help             Show this message and exit.
@@ -130,17 +138,23 @@ llmarmor scan ./src --strict
 # Strict mode with verbose output — maximum coverage
 llmarmor scan ./src --strict --verbose
 
-# Flat output (one line per finding)
+# Flat output (one structured block per finding)
 llmarmor scan ./src -f flat
 
 # JSON output to file
 llmarmor scan ./src -f json > findings.json
 
+# JSON output to file using --output flag
+llmarmor scan ./src -f json -o findings.json
+
 # SARIF output for GitHub Code Scanning
 llmarmor scan ./src -f sarif > results.sarif
 
-# Markdown report
-llmarmor scan ./src -f md > SECURITY_REPORT.md
+# Markdown report to file using --output flag
+llmarmor scan ./src -f md -o SECURITY_REPORT.md
+
+# Silent mode for CI (exit code only)
+llmarmor scan ./src --quiet && echo "Clean" || echo "Issues found"
 
 # Use a configuration file
 llmarmor scan ./src --config .llmarmor.yaml
@@ -493,7 +507,7 @@ The following directories are automatically skipped during scanning:
   and `@ai_fn` (Marvin AI) containing shell/subprocess sinks — AST-detected → HIGH
 - `getattr(module, llm_name)()` — AST-taint-tracked dynamic dispatch → CRITICAL (AST) / HIGH (regex)
 - `auto_approve=True`, `human_in_the_loop=False` — disabled approval gates → MEDIUM
-- `FileManagementToolkit()`, `WriteFileTool()` — broad filesystem access → MEDIUM
+- `FileManagementToolkit()`, `WriteFileTool()` — broad filesystem access → LOW (capability concern; scope to a directory)
 - Broad tool descriptions, missing explicit allowlists → INFO (normal) / MEDIUM (strict)
 
 **LLM10 — Unbounded Consumption**
@@ -703,7 +717,8 @@ llmarmor scan ./src; echo "Exit code: $?"
 
 ## Contributing
 
-Contributions are welcome! See the [contributing guide](CONTRIBUTING.md) for details.
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for the full
+development guide, including how to add a new rule.
 
 ```bash
 # Set up development environment
@@ -712,11 +727,14 @@ cd llmarmor
 pip install -e ".[dev]"
 
 # Run tests
-pytest -v
-
-# Run the scanner locally
-llmarmor scan ./tests/fixtures/
+pytest
 ```
+
+---
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for a complete list of changes.
 
 ---
 

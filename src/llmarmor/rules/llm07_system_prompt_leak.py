@@ -2,9 +2,14 @@
 
 import re
 
+from llmarmor.messages import CATALOG, RULE_URLS
+
 RULE_ID = "LLM07"
 RULE_NAME = "System Prompt Leakage"
 SEVERITY = "INFO"
+_REF = RULE_URLS[RULE_ID]
+_MSG_NORMAL = CATALOG[("LLM07", "hardcoded_normal")]
+_MSG_STRICT = CATALOG[("LLM07", "hardcoded_strict")]
 
 MIN_PROMPT_LENGTH = 100
 
@@ -22,25 +27,10 @@ ROLE_SYSTEM_PATTERN = re.compile(
     re.DOTALL,
 )
 
-_FIX_SUGGESTION = (
-    "Hardcoded system prompts in source code are visible to anyone with repository "
-    "access. If the prompt contains sensitive business logic or secrets, load it from "
-    "environment variables or a server-side configuration store instead."
-)
+_FIX_SUGGESTION = _MSG_NORMAL.fix
 
-_DESCRIPTION_NORMAL = (
-    "System prompt is hardcoded in source code. Consider moving to environment "
-    "variables or a config file for easier management and to prevent exposure "
-    "in version control."
-)
-
-_DESCRIPTION_STRICT = (
-    "System prompt is hardcoded in source code. If this code is published "
-    "(open source, client-side bundle, shared package), the prompt contents "
-    "will be visible to users. This may leak proprietary instructions, internal "
-    "tool descriptions, or behavioral constraints that could be exploited. "
-    "Move to environment variables or a secure config service."
-)
+_DESCRIPTION_NORMAL = _MSG_NORMAL.what
+_DESCRIPTION_STRICT = _MSG_STRICT.what
 
 
 def check_system_prompt_leak(filepath: str, content: str, strict: bool = False) -> list[dict]:
@@ -49,7 +39,8 @@ def check_system_prompt_leak(filepath: str, content: str, strict: bool = False) 
     lines = content.splitlines()
 
     severity = "MEDIUM" if strict else SEVERITY
-    description_var = _DESCRIPTION_STRICT if strict else _DESCRIPTION_NORMAL
+    description = _DESCRIPTION_STRICT if strict else _DESCRIPTION_NORMAL
+    why = _MSG_STRICT.why if strict else _MSG_NORMAL.why
 
     for i, line in enumerate(lines):
         stripped = line.strip()
@@ -66,8 +57,10 @@ def check_system_prompt_leak(filepath: str, content: str, strict: bool = False) 
                     "severity": severity,
                     "filepath": str(filepath),
                     "line": i + 1,
-                    "description": description_var,
+                    "description": description,
                     "fix_suggestion": _FIX_SUGGESTION,
+                    "why": why,
+                    "reference_url": _REF,
                 }
             )
             continue
@@ -82,8 +75,10 @@ def check_system_prompt_leak(filepath: str, content: str, strict: bool = False) 
                     "severity": severity,
                     "filepath": str(filepath),
                     "line": i + 1,
-                    "description": description_var,
+                    "description": description,
                     "fix_suggestion": _FIX_SUGGESTION,
+                    "why": why,
+                    "reference_url": _REF,
                 }
             )
 

@@ -14,6 +14,8 @@ INFO      generic tainted variable passed to unknown function (--strict → MEDI
 
 import re
 
+from llmarmor.messages import CATALOG, RULE_URLS
+
 RULE_ID = "LLM05"
 RULE_NAME = "Improper Output Handling"
 
@@ -87,31 +89,18 @@ _JSON_LOADS = re.compile(
     re.IGNORECASE,
 )
 
-_FIX_EXEC = (
-    "Never pass LLM-generated output directly to eval(), exec(), or compile(). "
-    "Validate and sanitise LLM output before any code execution. "
-    "Consider using a safe evaluation sandbox if dynamic code execution is required."
-)
-_FIX_SHELL = (
-    "Never pass LLM-generated output directly to shell or subprocess calls. "
-    "Use a fixed command allowlist and pass arguments as a list (not a shell string). "
-    "Apply strict input validation before any system command execution."
-)
-_FIX_SQL = (
-    "Never interpolate LLM output into SQL queries. "
-    "Use parameterised queries (cursor.execute(sql, params)) and validate all LLM output "
-    "against an expected schema before using it in database operations."
-)
-_FIX_HTML = (
-    "Never pass LLM output directly to HTML rendering functions. "
-    "Escape or sanitise LLM output with bleach or html.escape() before rendering, "
-    "and validate output against an expected schema."
-)
-_FIX_JSON = (
-    "Validate JSON deserialized from LLM output against a strict schema (e.g. pydantic). "
-    "LLM output can be manipulated to produce unexpected JSON structures. "
-    "Never pass deserialized data to further unsafe operations without validation."
-)
+_REF = RULE_URLS[RULE_ID]
+_EXEC_MSG = CATALOG[("LLM05", "code_exec")]
+_SHELL_MSG = CATALOG[("LLM05", "shell_exec")]
+_SQL_MSG = CATALOG[("LLM05", "sql_injection")]
+_HTML_MSG = CATALOG[("LLM05", "html_sink")]
+_JSON_MSG = CATALOG[("LLM05", "json_loads")]
+
+_FIX_EXEC = _EXEC_MSG.fix
+_FIX_SHELL = _SHELL_MSG.fix
+_FIX_SQL = _SQL_MSG.fix
+_FIX_HTML = _HTML_MSG.fix
+_FIX_JSON = _JSON_MSG.fix
 
 
 def check_improper_output(
@@ -145,6 +134,8 @@ def check_improper_output(
                             "arbitrary code execution from LLM-generated content."
                         ),
                         "fix_suggestion": _FIX_EXEC,
+                        "why": _EXEC_MSG.why,
+                        "reference_url": _REF,
                     }
                 )
                 continue
@@ -167,6 +158,8 @@ def check_improper_output(
                             "injection from LLM-generated content."
                         ),
                         "fix_suggestion": _FIX_SHELL,
+                        "why": _SHELL_MSG.why,
+                        "reference_url": _REF,
                     }
                 )
                 continue
@@ -186,10 +179,12 @@ def check_improper_output(
                         "filepath": str(filepath),
                         "line": i + 1,
                         "description": (
-                            f"LLM output is interpolated into a SQL query. "
+                            "LLM output is interpolated into a SQL query. "
                             "This may enable SQL injection via LLM-generated content."
                         ),
                         "fix_suggestion": _FIX_SQL,
+                        "why": _SQL_MSG.why,
+                        "reference_url": _REF,
                     }
                 )
                 continue
@@ -212,6 +207,8 @@ def check_improper_output(
                             "cross-site scripting (XSS) or HTML injection."
                         ),
                         "fix_suggestion": _FIX_HTML,
+                        "why": _HTML_MSG.why,
+                        "reference_url": _REF,
                     }
                 )
                 continue
@@ -235,6 +232,8 @@ def check_improper_output(
                             "feeds further unsafe operations this may be exploitable."
                         ),
                         "fix_suggestion": _FIX_JSON,
+                        "why": _JSON_MSG.why,
+                        "reference_url": _REF,
                     }
                 )
                 continue

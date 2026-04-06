@@ -12,6 +12,7 @@ from llmarmor.registry import Status, registry
 from llmarmor.scanner import run_scan
 
 console = Console()
+err_console = Console(stderr=True)
 
 
 def _build_mode(strict: bool, verbose: bool) -> str:
@@ -87,9 +88,45 @@ def main() -> None:
         "Auto-detected in the scan root if not specified."
     ),
 )
-def scan(path: str, strict: bool, verbose: bool, fmt: str, config_path: str | None) -> None:
+@click.option(
+    "--quiet",
+    "-q",
+    "quiet",
+    is_flag=True,
+    default=False,
+    help=(
+        "Suppress all output. Only the exit code communicates the result. "
+        "Useful in CI pipelines. Mutually exclusive with --verbose."
+    ),
+)
+@click.option(
+    "--output",
+    "-o",
+    "output_path",
+    default=None,
+    type=click.Path(),
+    help=(
+        "Write formatter output to PATH instead of stdout. "
+        "For grouped/flat formats, plain text is written (no ANSI markup). "
+        "For json/md/sarif, output is written directly. "
+        "A confirmation line is printed to stderr unless --quiet is set."
+    ),
+)
+def scan(
+    path: str,
+    strict: bool,
+    verbose: bool,
+    fmt: str,
+    config_path: str | None,
+    quiet: bool,
+    output_path: str | None,
+) -> None:
     """Scan PATH for LLM security vulnerabilities."""
     from llmarmor.config import load_config
+
+    # --quiet and --verbose are mutually exclusive.
+    if quiet and verbose:
+        raise click.UsageError("--quiet and --verbose are mutually exclusive.")
 
     # Load configuration file (auto-detected or explicit).
     cfg = load_config(config_path=config_path, scan_root=path)
@@ -100,8 +137,8 @@ def scan(path: str, strict: bool, verbose: bool, fmt: str, config_path: str | No
 
     mode = _build_mode(strict, verbose)
 
-    # For non-JSON/markdown/SARIF formats, show the header panel.
-    if fmt not in ("json", "md", "markdown", "sarif"):
+    # For non-JSON/markdown/SARIF formats, show the header panel (unless quiet).
+    if not quiet and fmt not in ("json", "md", "markdown", "sarif"):
         mode_parts = []
         if strict:
             mode_parts.append("[bold yellow](strict)[/bold yellow]")
@@ -119,7 +156,20 @@ def scan(path: str, strict: bool, verbose: bool, fmt: str, config_path: str | No
 
     findings = run_scan(path, strict=strict, config=cfg)
 
-    render(findings, fmt=fmt, console=console, scan_path=path, verbose=verbose, mode=mode)
+    render(
+        findings,
+        fmt=fmt,
+        console=console,
+        scan_path=path,
+        verbose=verbose,
+        mode=mode,
+        quiet=quiet,
+        output_file=output_path,
+    )
+
+    # Print confirmation when writing to a file (unless quiet).
+    if output_path and not quiet:
+        err_console.print(f"Report written to {output_path}")
 
     sys.exit(_compute_exit_code(findings))
 

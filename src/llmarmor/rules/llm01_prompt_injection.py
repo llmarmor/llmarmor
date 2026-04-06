@@ -2,8 +2,11 @@
 
 import re
 
+from llmarmor.messages import CATALOG, RULE_URLS
+
 RULE_ID = "LLM01"
 RULE_NAME = "Prompt Injection"
+_REF = RULE_URLS[RULE_ID]
 # Regex-only detection (without AST-confirmed taint): HIGH confidence but not
 # confirmed. AST-confirmed findings (system-role f-string injection) remain CRITICAL.
 SEVERITY = "HIGH"
@@ -50,12 +53,13 @@ LANGCHAIN_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-FIX_SUGGESTION = (
-    "Avoid interpolating user input directly into prompt strings. Instead, pass "
-    "user input as a separate 'role: user' message without interpolation. If you "
-    "must include user input in a prompt template, validate and sanitize it first "
-    "— consider input length limits, allowlists, or a prompt-injection detection library."
-)
+_FSTRING_MSG = CATALOG[("LLM01", "fstring")]
+_FORMAT_MSG = CATALOG[("LLM01", "format_method")]
+_PERCENT_MSG = CATALOG[("LLM01", "percent_format")]
+_LANGCHAIN_MSG = CATALOG[("LLM01", "langchain_template")]
+_CONCAT_MSG = CATALOG[("LLM01", "concat")]
+
+FIX_SUGGESTION = _FSTRING_MSG.fix
 
 _CONTEXT_WINDOW = 5  # lines to look before/after for prompt context
 
@@ -85,13 +89,10 @@ def check_prompt_injection(filepath: str, content: str) -> list[dict]:
                         "severity": SEVERITY,
                         "filepath": str(filepath),
                         "line": i + 1,
-                        "description": (
-                            "User input is interpolated into a prompt string via an f-string. "
-                            "If this constructs a system or assistant message, it may enable "
-                            "prompt injection. Passing user input as a separate 'role: user' "
-                            "message without interpolation is the recommended safe pattern."
-                        ),
-                        "fix_suggestion": FIX_SUGGESTION,
+                        "description": _FSTRING_MSG.what,
+                        "fix_suggestion": _FSTRING_MSG.fix,
+                        "why": _FSTRING_MSG.why,
+                        "reference_url": _REF,
                     }
                 )
                 continue
@@ -106,13 +107,10 @@ def check_prompt_injection(filepath: str, content: str) -> list[dict]:
                         "severity": SEVERITY,
                         "filepath": str(filepath),
                         "line": i + 1,
-                        "description": (
-                            "User input is interpolated into a prompt string via .format(). "
-                            "If this constructs a system or assistant message, it may enable "
-                            "prompt injection. Passing user input as a separate 'role: user' "
-                            "message without interpolation is the recommended safe pattern."
-                        ),
-                        "fix_suggestion": FIX_SUGGESTION,
+                        "description": _FORMAT_MSG.what,
+                        "fix_suggestion": _FORMAT_MSG.fix,
+                        "why": _FORMAT_MSG.why,
+                        "reference_url": _REF,
                     }
                 )
                 continue
@@ -127,14 +125,10 @@ def check_prompt_injection(filepath: str, content: str) -> list[dict]:
                         "severity": SEVERITY,
                         "filepath": str(filepath),
                         "line": i + 1,
-                        "description": (
-                            "User input is interpolated into a prompt string via "
-                            "%-formatting. If this constructs a system or assistant "
-                            "message, it may enable prompt injection. Passing user "
-                            "input as a separate 'role: user' message without "
-                            "interpolation is the recommended safe pattern."
-                        ),
-                        "fix_suggestion": FIX_SUGGESTION,
+                        "description": _PERCENT_MSG.what,
+                        "fix_suggestion": _PERCENT_MSG.fix,
+                        "why": _PERCENT_MSG.why,
+                        "reference_url": _REF,
                     }
                 )
                 continue
@@ -148,12 +142,10 @@ def check_prompt_injection(filepath: str, content: str) -> list[dict]:
                     "severity": SEVERITY,
                     "filepath": str(filepath),
                     "line": i + 1,
-                    "description": (
-                        "LangChain PromptTemplate with a user-input variable placeholder "
-                        "detected. If user input is passed to this template without "
-                        "validation, it may enable prompt injection attacks."
-                    ),
-                    "fix_suggestion": FIX_SUGGESTION,
+                    "description": _LANGCHAIN_MSG.what,
+                    "fix_suggestion": _LANGCHAIN_MSG.fix,
+                    "why": _LANGCHAIN_MSG.why,
+                    "reference_url": _REF,
                 }
             )
             continue
@@ -167,13 +159,10 @@ def check_prompt_injection(filepath: str, content: str) -> list[dict]:
                     "severity": SEVERITY,
                     "filepath": str(filepath),
                     "line": i + 1,
-                    "description": (
-                        "User input is interpolated into a prompt string via string "
-                        "concatenation. If this constructs a system or assistant message, "
-                        "it may enable prompt injection. Passing user input as a separate "
-                        "'role: user' message without interpolation is the recommended safe pattern."
-                    ),
-                    "fix_suggestion": FIX_SUGGESTION,
+                    "description": _CONCAT_MSG.what,
+                    "fix_suggestion": _CONCAT_MSG.fix,
+                    "why": _CONCAT_MSG.why,
+                    "reference_url": _REF,
                 }
             )
 
