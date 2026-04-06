@@ -112,54 +112,48 @@ def _get_rule_name(rule_id: str, fallback: str = "") -> str:
 
 
 def format_grouped(findings: Sequence[dict], console: Console, scan_path: str) -> None:
-    """Print findings grouped by rule to *console* (default format)."""
+    """Print findings grouped by rule to *console* (default format).
+
+    Each (rule_id, severity) pair becomes its own section so that every section
+    header reflects exactly the severity of the findings listed inside it.
+    This matches the behaviour of tools like Bandit and Checkov where the same
+    rule at different severities produces separate groups.
+    """
     if not findings:
         console.print("[green]✅ No vulnerabilities detected.[/green]")
         return
 
-    # Group findings: rule_id → list[dict]
-    by_rule: dict[str, list[dict]] = defaultdict(list)
+    # Group findings by (rule_id, severity) — one group per unique combination.
+    by_rule: dict[tuple, list[dict]] = defaultdict(list)
     for f in findings:
-        by_rule[f["rule_id"]].append(f)
+        by_rule[(f["rule_id"], f["severity"])].append(f)
 
-    # Sort rule groups by worst severity first.
-    def _group_severity(rule_id: str) -> int:
-        group = by_rule[rule_id]
-        return min(_severity_sort_key(f["severity"]) for f in group)
+    # Sort groups: most critical severity first, then alphabetically by rule_id.
+    sorted_keys = sorted(
+        by_rule.keys(),
+        key=lambda k: (_severity_sort_key(k[1]), k[0]),
+    )
 
-    sorted_rules = sorted(by_rule.keys(), key=_group_severity)
-
-    for rule_id in sorted_rules:
-        group = by_rule[rule_id]
-        # Use the severity of the worst finding in the group for the header.
-        worst_sev = min(group, key=lambda f: _severity_sort_key(f["severity"]))["severity"]
-        color = _SEVERITY_COLORS.get(worst_sev, "white")
+    for rule_id, severity in sorted_keys:
+        group = by_rule[(rule_id, severity)]
+        color = _SEVERITY_COLORS.get(severity, "white")
         rule_name = group[0].get("rule_name") or _get_rule_name(rule_id)
 
         console.print(
-            f"\n[bold]━━━ {rule_id}: {rule_name} ([{color}]{worst_sev}[/{color}]) ━━━[/bold]"
+            f"\n[bold]━━━ {rule_id}: {rule_name} ([{color}]{severity}[/{color}]) ━━━[/bold]"
         )
 
-        # Deduplicate descriptions (should all be the same per rule in practice).
+        # All findings in this group share the same description (same rule + severity).
         description = group[0].get("description", "")
         if description:
             console.print(f"{description}\n")
 
-        # Locations — show per-finding severity annotation when the group contains
-        # mixed severities so the summary line always matches what is visible.
-        mixed_severities = len({f["severity"] for f in group}) > 1
+        # Locations — every entry here has the same severity, no annotation needed.
         for f in sorted(group, key=lambda x: (x["filepath"], x["line"])):
             fp = truncate_path(f["filepath"])
-            if mixed_severities and f["severity"] != worst_sev:
-                sev_color = _SEVERITY_COLORS.get(f["severity"], "white")
-                console.print(
-                    f"  [cyan]→[/cyan] {fp}:{f['line']} "
-                    f"([{sev_color}]{f['severity']}[/{sev_color}])"
-                )
-            else:
-                console.print(f"  [cyan]→[/cyan] {fp}:{f['line']}")
+            console.print(f"  [cyan]→[/cyan] {fp}:{f['line']}")
 
-        # Fix suggestion (first non-empty one).
+        # Fix suggestion (all findings in the group share the same fix).
         fix = next((f.get("fix_suggestion") for f in group if f.get("fix_suggestion")), None)
         if fix:
             console.print(f"\n[dim]Fix: {fix}[/dim]")

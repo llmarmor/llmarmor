@@ -59,14 +59,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   vulnerability. Disabled approval gates (`auto_approve=True`) remain `MEDIUM`.
 - **`format_flat`** — redesigned from a Rich table view to a structured per-finding block
   with What/Why/Fix/Ref sections (more readable for terminal output and piping).
+- **`format_grouped`** — now groups findings by `(rule_id, severity)` instead of just
+  `rule_id`. Each section header reflects exactly the severity of the findings inside it,
+  eliminating the confusing "header says HIGH but finding inside is MEDIUM" pattern.
+  This matches the behaviour of Bandit and Checkov.
 - **`formatters.py`** — removed duplicate `_RULE_NAMES` dict; rule names are now read from
   the central registry (`registry.py`).
 - All rule files (`llm01` through `llm10`) now import descriptions, fix suggestions, and
   reference URLs from the message catalog instead of having them hardcoded inline.
+- **README Quick Start** — updated with `--output` and `--quiet` examples; reordered so
+  the most common workflows come first.
+- **README flat format** — description and terminal example updated to reflect the
+  structured What/Why/Fix/Ref blocks introduced in this release.
+- **README JSON example** — updated to include `why` and `reference_url` fields.
+- **README severity table** — tightened for scannability; each row now states the
+  principle and refers to "What Each Rule Detects" for exhaustive pattern lists.
+- **README CLI examples** — reordered so the most common CI/CD workflows appear first.
 
 ### Fixed
 - `ast_analysis.py` — strict mode user-role plain variable finding emitted `MEDIUM` instead
   of `LOW` as documented in the README and module docstring. Fixed to `LOW`.
+- `format_grouped` — mixed-severity rule groups showed a misleading header (e.g., "HIGH")
+  while listing locations at lower severities. Fixed by grouping on `(rule_id, severity)`
+  so every section header is unambiguous.
 
 ---
 
