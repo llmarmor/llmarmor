@@ -31,7 +31,6 @@ across Python files, config files, notebooks, and more.
 - [How It Works](#how-it-works--dual-layer-analysis)
 - [CI/CD Integration](#cicd-integration)
 - [Contributing](#contributing)
-- [Changelog](#changelog)
 - [Links](#links)
 - [License](#license)
 
@@ -749,18 +748,11 @@ pytest
 
 ---
 
-## Changelog
-
-See [CHANGELOG.md](CHANGELOG.md) for a complete list of changes.
-
----
-
 ## Links
 
 - 🌐 Website: [llmarmor.dev](https://llmarmor.dev)
 - 📦 PyPI: [pypi.org/project/llmarmor](https://pypi.org/project/llmarmor/)
 - 🐛 Issues: [github.com/llmarmor/llmarmor/issues](https://github.com/llmarmor/llmarmor/issues)
-- 📖 Changelog: [CHANGELOG.md](CHANGELOG.md)
 
 ---
 
