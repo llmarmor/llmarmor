@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "llmarmor"
-version = "0.5.0"
+version = "0.5.1"
 description = "OWASP LLM Top 10 security scanner for AI-powered applications"
 readme = "README.md"
 license = {text = "MIT"}

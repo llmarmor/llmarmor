@@ -54,7 +54,7 @@ pip install -e ".[dev]"
 ### Requirements
 
 - Python 3.10+
-- No external runtime dependencies beyond `click` and `rich`
+- No external runtime dependencies beyond `click`, `rich` and `pyyaml`
 
 ---
 
@@ -123,6 +123,8 @@ Options:
                      A confirmation line is printed to stderr unless --quiet.
   --config PATH      Path to a .llmarmor.yaml configuration file.
                      Auto-detected in the scan root if not specified.
+  --rules            List all OWASP LLM Top 10 rules grouped by support status.
+  --version          Print the installed version.
   --help             Show this message and exit.
 ```
 
@@ -161,25 +163,6 @@ llmarmor scan ./src --strict --verbose -f json -o full-report.json
 
 # Use a configuration file
 llmarmor scan ./src --config .llmarmor.yaml
-```
-
-### `llmarmor rules`
-
-List all OWASP LLM Top 10 rules grouped by support status.
-
-```
-Usage: llmarmor rules [OPTIONS]
-
-Options:
-  --help  Show this message and exit.
-```
-
-### `llmarmor --version`
-
-Print the installed version.
-
-```bash
-llmarmor --version
 ```
 
 ---
