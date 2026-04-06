@@ -136,26 +136,26 @@ class TestLLM08ExcessiveAgency:
         ), f"Expected MEDIUM finding for human_in_the_loop=False; got: {findings}"
 
     # ------------------------------------------------------------------
-    # MEDIUM: broad filesystem tools
+    # LOW: broad filesystem tools (capability concern, not confirmed exploit)
     # ------------------------------------------------------------------
 
-    def test_file_management_toolkit_flagged_as_medium(self, tmp_path: Path):
-        """FileManagementToolkit() must produce a MEDIUM finding."""
+    def test_file_management_toolkit_flagged_as_low(self, tmp_path: Path):
+        """FileManagementToolkit() must produce a LOW finding (presence alone is not a confirmed exploit)."""
         code = "tools = FileManagementToolkit()\n"
         findings = check_excessive_agency(str(tmp_path / "app.py"), code)
         assert any(
-            f["rule_id"] == "LLM08" and f["severity"] == "MEDIUM"
+            f["rule_id"] == "LLM08" and f["severity"] == "LOW"
             for f in findings
-        ), f"Expected MEDIUM finding for FileManagementToolkit(); got: {findings}"
+        ), f"Expected LOW finding for FileManagementToolkit(); got: {findings}"
 
-    def test_write_file_tool_flagged_as_medium(self, tmp_path: Path):
-        """WriteFileTool() must produce a MEDIUM finding."""
+    def test_write_file_tool_flagged_as_low(self, tmp_path: Path):
+        """WriteFileTool() must produce a LOW finding (presence alone is not a confirmed exploit)."""
         code = "tools = [WriteFileTool()]\n"
         findings = check_excessive_agency(str(tmp_path / "app.py"), code)
         assert any(
-            f["rule_id"] == "LLM08" and f["severity"] == "MEDIUM"
+            f["rule_id"] == "LLM08" and f["severity"] == "LOW"
             for f in findings
-        ), f"Expected MEDIUM finding for WriteFileTool(); got: {findings}"
+        ), f"Expected LOW finding for WriteFileTool(); got: {findings}"
 
     # ------------------------------------------------------------------
     # INFO (normal) / MEDIUM (strict): broad tool descriptions

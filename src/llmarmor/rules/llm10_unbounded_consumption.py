@@ -2,9 +2,13 @@
 
 import re
 
+from llmarmor.messages import CATALOG, RULE_URLS
+
 RULE_ID = "LLM10"
 RULE_NAME = "Unbounded Consumption"
 SEVERITY = "MEDIUM"
+_REF = RULE_URLS[RULE_ID]
+_MSG = CATALOG[("LLM10", "missing_max_tokens")]
 
 # LLM API call patterns — text/chat completion endpoints only
 API_CALL_PATTERN = re.compile(
@@ -18,11 +22,7 @@ MAX_TOKENS_PATTERN = re.compile(r"\bmax_(?:output_)?tokens\s*=", re.IGNORECASE)
 
 _CONTEXT_WINDOW = 10  # lines after the API call to search for max_tokens
 
-FIX_SUGGESTION = (
-    "Always set max_tokens (or equivalent) on LLM API calls to prevent runaway "
-    "token consumption and unexpected costs. Also consider adding timeout and "
-    "per-user rate limits."
-)
+FIX_SUGGESTION = _MSG.fix
 
 
 def check_unbounded_consumption(filepath: str, content: str) -> list[dict]:
@@ -58,6 +58,8 @@ def check_unbounded_consumption(filepath: str, content: str) -> list[dict]:
                         + kwargs_note
                     ),
                     "fix_suggestion": FIX_SUGGESTION,
+                    "why": _MSG.why,
+                    "reference_url": _REF,
                 }
             )
 

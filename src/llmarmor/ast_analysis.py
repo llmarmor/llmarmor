@@ -35,10 +35,29 @@ import ast
 import collections
 from pathlib import Path as _Path
 
+from llmarmor.messages import CATALOG, RULE_URLS
+
 _LLM01 = "LLM01"
 _LLM05 = "LLM05"
 _LLM07 = "LLM07"
 _LLM08 = "LLM08"
+
+# Pre-load reference URLs for rules emitted by this module.
+_REF_LLM01 = RULE_URLS[_LLM01]
+_REF_LLM05 = RULE_URLS[_LLM05]
+_REF_LLM08 = RULE_URLS[_LLM08]
+
+# Pre-load catalog entries used in this module.
+_MSG_LLM01_SYSTEM_FSTR = CATALOG[("LLM01", "ast_system_fstring")]
+_MSG_LLM01_SYSTEM_PLAIN = CATALOG[("LLM01", "ast_system_plain")]
+_MSG_LLM01_USER_PLAIN = CATALOG[("LLM01", "ast_user_plain")]
+_MSG_LLM05_EXEC = CATALOG[("LLM05", "code_exec")]
+_MSG_LLM05_SHELL = CATALOG[("LLM05", "shell_exec")]
+_MSG_LLM05_SQL = CATALOG[("LLM05", "sql_injection")]
+_MSG_LLM05_HTML = CATALOG[("LLM05", "html_sink")]
+_MSG_LLM05_JSON = CATALOG[("LLM05", "json_loads")]
+_MSG_LLM08_GLOBALS = CATALOG[("LLM08", "globals_dispatch")]
+_MSG_LLM08_GETATTR = CATALOG[("LLM08", "getattr_dispatch")]
 
 # Decorator names that register a function as an LLM-agent-invocable tool.
 # Covers LangChain/CrewAI/AutoGen/LlamaIndex/Smolagents/ADK/MCP (@tool),
@@ -449,16 +468,10 @@ class _Analyzer(ast.NodeVisitor):
                                 "CRITICAL",
                                 self.filepath,
                                 node.lineno,
-                                (
-                                    "User input is interpolated into a system or assistant "
-                                    "role message. This may enable prompt injection attacks. "
-                                    "Pass user input only as a separate 'role: user' message "
-                                    "without string interpolation."
-                                ),
-                                (
-                                    "Avoid interpolating user input into system prompts. "
-                                    "Pass user input as a separate 'role: user' message."
-                                ),
+                                _MSG_LLM01_SYSTEM_FSTR.what,
+                                _MSG_LLM01_SYSTEM_FSTR.fix,
+                                reference_url=_REF_LLM01,
+                                why=_MSG_LLM01_SYSTEM_FSTR.why,
                             )
                         )
                         # Suppress the regex LLM01 finding at this line (same issue).
@@ -482,10 +495,9 @@ class _Analyzer(ast.NodeVisitor):
                                         "If the variable contains unsanitized user input, the user "
                                         "controls the entire system instruction."
                                     ),
-                                    (
-                                        "Validate and sanitize the variable before using it as "
-                                        "system message content, or use a fixed system prompt."
-                                    ),
+                                    _MSG_LLM01_SYSTEM_PLAIN.fix,
+                                    reference_url=_REF_LLM01,
+                                    why=_MSG_LLM01_SYSTEM_PLAIN.why,
                                 )
                             )
                         else:
@@ -504,10 +516,9 @@ class _Analyzer(ast.NodeVisitor):
                                         "(plain assignment, not interpolated). Consider validating "
                                         "or sanitizing the value before use."
                                     ),
-                                    (
-                                        "Validate and sanitize the variable before using it as "
-                                        "system message content, or use a fixed system prompt."
-                                    ),
+                                    _MSG_LLM01_SYSTEM_PLAIN.fix,
+                                    reference_url=_REF_LLM01,
+                                    why=_MSG_LLM01_SYSTEM_PLAIN.why,
                                 )
                             )
 
@@ -516,22 +527,20 @@ class _Analyzer(ast.NodeVisitor):
                         content_node
                     ):
                         if self.strict:
-                            # Strict mode: flag plain tainted variable in user role too.
+                            # Strict mode: flag plain tainted variable in user role.
+                            # LOW severity — this is a "consider adding validation" signal,
+                            # not a confirmed injection vector (user role is the safe pattern).
                             self.findings.append(
                                 _finding(
                                     _LLM01,
                                     "Prompt Injection",
-                                    "MEDIUM",
+                                    "LOW",
                                     self.filepath,
                                     node.lineno,
-                                    (
-                                        "User input is passed directly without sanitization. "
-                                        "Consider input validation and length limits."
-                                    ),
-                                    (
-                                        "Validate user input before passing it to the LLM. "
-                                        "Apply length limits and content filtering."
-                                    ),
+                                    _MSG_LLM01_USER_PLAIN.what,
+                                    _MSG_LLM01_USER_PLAIN.fix,
+                                    reference_url=_REF_LLM01,
+                                    why=_MSG_LLM01_USER_PLAIN.why,
                                 )
                             )
                         else:
@@ -546,15 +555,10 @@ class _Analyzer(ast.NodeVisitor):
                                     "INFO",
                                     self.filepath,
                                     node.lineno,
-                                    (
-                                        "User input is passed directly as user role content "
-                                        "(plain assignment, not interpolated). Consider applying "
-                                        "input validation and length limits."
-                                    ),
-                                    (
-                                        "Validate user input before passing it to the LLM. "
-                                        "Apply length limits and content filtering."
-                                    ),
+                                    _MSG_LLM01_USER_PLAIN.what,
+                                    _MSG_LLM01_USER_PLAIN.fix,
+                                    reference_url=_REF_LLM01,
+                                    why=_MSG_LLM01_USER_PLAIN.why,
                                 )
                             )
 
@@ -582,16 +586,10 @@ class _Analyzer(ast.NodeVisitor):
                             "CRITICAL",
                             self.filepath,
                             node.lineno,
-                            (
-                                "User input is joined into a string via str.join(). "
-                                "If this string is used as an LLM prompt, it may enable "
-                                "prompt injection attacks. Pass user input as a separate "
-                                "'role: user' message instead."
-                            ),
-                            (
-                                "Avoid joining user input into prompt strings. "
-                                "Pass user input as a separate 'role: user' message."
-                            ),
+                            _MSG_LLM01_SYSTEM_FSTR.what,
+                            _MSG_LLM01_SYSTEM_FSTR.fix,
+                            reference_url=_REF_LLM01,
+                            why=_MSG_LLM01_SYSTEM_FSTR.why,
                         )
                     )
                     break  # one finding per join call is enough
@@ -656,11 +654,9 @@ class _Analyzer(ast.NodeVisitor):
                             f"Tainted value passed to {func.id}() — this enables "
                             "arbitrary code execution from user-controlled input."
                         ),
-                        (
-                            "Never pass user-controlled or LLM-generated data to "
-                            "eval(), exec(), or compile(). Validate strictly or "
-                            "use a safe sandbox."
-                        ),
+                        _MSG_LLM05_EXEC.fix,
+                        reference_url=_REF_LLM05,
+                        why=_MSG_LLM05_EXEC.why,
                     )
                 )
                 self.cleared.add((node.lineno, _LLM05))
@@ -694,11 +690,9 @@ class _Analyzer(ast.NodeVisitor):
                             f"Tainted value passed to {method}() — this enables "
                             "OS command injection from user-controlled input."
                         ),
-                        (
-                            "Never pass user-controlled or LLM-generated data to "
-                            "shell or subprocess calls. Use a fixed command allowlist "
-                            "and pass arguments as a list."
-                        ),
+                        _MSG_LLM05_SHELL.fix,
+                        reference_url=_REF_LLM05,
+                        why=_MSG_LLM05_SHELL.why,
                     )
                 )
                 self.cleared.add((node.lineno, _LLM05))
@@ -722,10 +716,9 @@ class _Analyzer(ast.NodeVisitor):
                             f"Tainted value passed to {sink_name}() — this may enable "
                             "cross-site scripting (XSS) or HTML injection."
                         ),
-                        (
-                            "Sanitise or escape user-controlled / LLM-generated data "
-                            "before passing it to HTML rendering functions."
-                        ),
+                        _MSG_LLM05_HTML.fix,
+                        reference_url=_REF_LLM05,
+                        why=_MSG_LLM05_HTML.why,
                     )
                 )
                 self.cleared.add((node.lineno, _LLM05))
@@ -749,11 +742,9 @@ class _Analyzer(ast.NodeVisitor):
                             "validation. If the parsed result feeds further unsafe "
                             "operations this may be exploitable."
                         ),
-                        (
-                            "Validate JSON deserialised from user-controlled or "
-                            "LLM-generated data against a strict schema (e.g. pydantic) "
-                            "before using the result in further operations."
-                        ),
+                        _MSG_LLM05_JSON.fix,
+                        reference_url=_REF_LLM05,
+                        why=_MSG_LLM05_JSON.why,
                     )
                 )
                 self.cleared.add((node.lineno, _LLM05))
@@ -817,12 +808,9 @@ class _Analyzer(ast.NodeVisitor):
                                 f"{method}() call — this grants the LLM agent "
                                 "OS-level command execution capability."
                             ),
-                            (
-                                "Avoid placing shell or subprocess calls inside "
-                                "@tool-decorated functions. If shell access is required, "
-                                "apply strict input validation and sandbox the execution "
-                                "environment."
-                            ),
+                            _MSG_LLM08_GETATTR.fix,
+                            reference_url=_REF_LLM08,
+                            why=_MSG_LLM08_GETATTR.why,
                         )
                     )
             queue.extend(ast.iter_child_nodes(child))
@@ -864,10 +852,9 @@ class _Analyzer(ast.NodeVisitor):
                                 "function name. An attacker can redirect execution to any "
                                 "method on the target object."
                             ),
-                            (
-                                "Validate the function name against an explicit allowlist "
-                                "before calling: `if name in ALLOWED: getattr(obj, name)()`."
-                            ),
+                            _MSG_LLM08_GETATTR.fix,
+                            reference_url=_REF_LLM08,
+                            why=_MSG_LLM08_GETATTR.why,
                         )
                     )
                     self.cleared.add((node.lineno, _LLM08))
@@ -902,10 +889,9 @@ class _Analyzer(ast.NodeVisitor):
                             "result is called. An attacker can invoke any function "
                             "in the module namespace."
                         ),
-                        (
-                            "Use an explicit allowlist instead of globals() dispatch: "
-                            "`ALLOWED = {'fn': fn}; ALLOWED[name]()`."
-                        ),
+                        _MSG_LLM08_GLOBALS.fix,
+                        reference_url=_REF_LLM08,
+                        why=_MSG_LLM08_GLOBALS.why,
                     )
                 )
                 self.cleared.add((node.lineno, _LLM08))
@@ -1154,8 +1140,11 @@ def _finding(
     line: int,
     description: str,
     fix_suggestion: str,
+    *,
+    reference_url: str = "",
+    why: str = "",
 ) -> dict:
-    return {
+    d = {
         "rule_id": rule_id,
         "rule_name": rule_name,
         "severity": severity,
@@ -1164,6 +1153,11 @@ def _finding(
         "description": description,
         "fix_suggestion": fix_suggestion,
     }
+    if reference_url:
+        d["reference_url"] = reference_url
+    if why:
+        d["why"] = why
+    return d
 
 
 def _is_eval_context(filepath: str, tree: ast.AST) -> bool:

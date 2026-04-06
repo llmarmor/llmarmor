@@ -3448,3 +3448,343 @@ class TestGroupedFormatMixedSeverity:
                 assert "(HIGH)" not in line, (
                     f"Uniform-severity group must not annotate locations; got: {line}"
                 )
+
+
+# ---------------------------------------------------------------------------
+# Tests for new features: --quiet flag, --output flag, reference_url field,
+# structured message template, and user-role severity fix
+# ---------------------------------------------------------------------------
+
+
+class TestQuietFlag:
+    """Tests for the --quiet / -q flag behaviour."""
+
+    _FINDING = {
+        "rule_id": "LLM01",
+        "rule_name": "Prompt Injection",
+        "severity": "HIGH",
+        "filepath": "app.py",
+        "line": 10,
+        "description": "User input in prompt.",
+        "fix_suggestion": "Use separate message.",
+    }
+
+    def _make_console(self):
+        from io import StringIO
+        from rich.console import Console
+        return Console(file=StringIO(), width=120)
+
+    def test_quiet_suppresses_grouped_output(self):
+        """render() with quiet=True must produce no console output."""
+        from llmarmor.formatters import render
+        console = self._make_console()
+        render([self._FINDING], fmt="grouped", console=console,
+               scan_path="/p", quiet=True)
+        assert console.file.getvalue() == "", "quiet mode must suppress all console output"
+
+    def test_quiet_suppresses_flat_output(self):
+        """render() with quiet=True must produce no console output for flat format."""
+        from llmarmor.formatters import render
+        console = self._make_console()
+        render([self._FINDING], fmt="flat", console=console, scan_path="/p", quiet=True)
+        assert console.file.getvalue() == "", "quiet mode must suppress flat output"
+
+    def test_quiet_suppresses_json_output(self, capsys):
+        """render() with quiet=True must produce no stdout output for JSON format."""
+        from llmarmor.formatters import render
+        from io import StringIO
+        from rich.console import Console
+        console = Console(file=StringIO(), width=120)
+        render([self._FINDING], fmt="json", console=console, scan_path="/p", quiet=True)
+        captured = capsys.readouterr()
+        assert captured.out == "", "quiet mode must suppress JSON stdout output"
+
+    def test_quiet_and_verbose_are_mutually_exclusive(self):
+        """CLI must error when both --quiet and --verbose are specified."""
+        from click.testing import CliRunner
+        from llmarmor.cli import main
+        runner = CliRunner()
+        result = runner.invoke(main, ["scan", ".", "--quiet", "--verbose"])
+        assert result.exit_code != 0, "quiet + verbose must produce an error exit"
+
+
+class TestOutputFlag:
+    """Tests for the --output / -o flag behaviour."""
+
+    _FINDING = {
+        "rule_id": "LLM01",
+        "rule_name": "Prompt Injection",
+        "severity": "HIGH",
+        "filepath": "app.py",
+        "line": 10,
+        "description": "User input in prompt.",
+        "fix_suggestion": "Use separate message.",
+    }
+
+    def test_output_file_created_for_grouped(self, tmp_path):
+        """render() with output_file writes plain text for grouped format."""
+        from io import StringIO
+        from rich.console import Console
+        from llmarmor.formatters import render
+        out_file = str(tmp_path / "report.txt")
+        console = Console(file=StringIO(), width=120)
+        render([self._FINDING], fmt="grouped", console=console,
+               scan_path="/p", output_file=out_file)
+        assert (tmp_path / "report.txt").exists(), "Output file should be created"
+        content = (tmp_path / "report.txt").read_text(encoding="utf-8")
+        assert "LLM01" in content, "Output file should contain rule ID"
+
+    def test_output_file_created_for_json(self, tmp_path, capsys):
+        """render() with output_file writes JSON to file for json format."""
+        import json as _json
+        from io import StringIO
+        from rich.console import Console
+        from llmarmor.formatters import render
+        out_file = str(tmp_path / "report.json")
+        console = Console(file=StringIO(), width=120)
+        render([self._FINDING], fmt="json", console=console,
+               scan_path="/p", output_file=out_file)
+        # Nothing should be printed to stdout
+        assert capsys.readouterr().out == "", "Output to file must not also print to stdout"
+        assert (tmp_path / "report.json").exists(), "JSON output file should be created"
+        content = (tmp_path / "report.json").read_text(encoding="utf-8")
+        parsed = _json.loads(content)
+        assert "findings" in parsed, "JSON file should be valid scan JSON"
+
+    def test_output_file_created_for_sarif(self, tmp_path, capsys):
+        """render() with output_file writes SARIF to file."""
+        import json as _json
+        from io import StringIO
+        from rich.console import Console
+        from llmarmor.formatters import render
+        out_file = str(tmp_path / "results.sarif")
+        console = Console(file=StringIO(), width=120)
+        render([self._FINDING], fmt="sarif", console=console,
+               scan_path="/p", output_file=out_file)
+        capsys.readouterr()  # consume any captured output
+        assert (tmp_path / "results.sarif").exists(), "SARIF output file should be created"
+        content = (tmp_path / "results.sarif").read_text(encoding="utf-8")
+        parsed = _json.loads(content)
+        assert parsed["version"] == "2.1.0", "SARIF file should have version 2.1.0"
+
+
+class TestReferenceUrlField:
+    """Tests that findings include the reference_url field from the messages catalog."""
+
+    def test_llm01_finding_has_reference_url(self, tmp_path):
+        """LLM01 findings must include a reference_url field."""
+        from llmarmor.rules.llm01_prompt_injection import check_prompt_injection
+        code = "content = f'Hello {user_input}'\n"
+        findings = check_prompt_injection(str(tmp_path / "app.py"), code)
+        assert findings, "Expected LLM01 finding"
+        assert "reference_url" in findings[0], "LLM01 finding must have reference_url"
+        assert "llm01" in findings[0]["reference_url"], "reference_url must be LLM01-specific"
+
+    def test_llm02_finding_has_reference_url(self, tmp_path):
+        """LLM02 findings must include a reference_url field."""
+        from llmarmor.rules.llm02_sensitive_info import check_sensitive_info
+        code = "api_key = 'sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234'\n"
+        findings = check_sensitive_info(str(tmp_path / "app.py"), code)
+        assert findings, "Expected LLM02 finding"
+        assert "reference_url" in findings[0], "LLM02 finding must have reference_url"
+        assert "llm02" in findings[0]["reference_url"], "reference_url must be LLM02-specific"
+
+    def test_llm08_finding_has_reference_url(self, tmp_path):
+        """LLM08 findings must include a reference_url field."""
+        from llmarmor.rules.llm08_excessive_agency import check_excessive_agency
+        code = "tools = ['*']\n"
+        findings = check_excessive_agency(str(tmp_path / "app.py"), code)
+        assert findings, "Expected LLM08 finding"
+        assert "reference_url" in findings[0], "LLM08 finding must have reference_url"
+        assert "llm08" in findings[0]["reference_url"], "reference_url must be LLM08-specific"
+
+    def test_llm10_finding_has_reference_url(self, tmp_path):
+        """LLM10 findings must include a reference_url field."""
+        from llmarmor.rules.llm10_unbounded_consumption import check_unbounded_consumption
+        code = "response = client.chat.completions.create(model='gpt-4', messages=[])\n"
+        findings = check_unbounded_consumption(str(tmp_path / "app.py"), code)
+        assert findings, "Expected LLM10 finding"
+        assert "reference_url" in findings[0], "LLM10 finding must have reference_url"
+        assert "llm10" in findings[0]["reference_url"], "reference_url must be LLM10-specific"
+
+    def test_llm08_filesystem_finding_is_low(self, tmp_path):
+        """FileManagementToolkit findings must be LOW (downgraded from MEDIUM)."""
+        from llmarmor.rules.llm08_excessive_agency import check_excessive_agency
+        code = "tools = FileManagementToolkit(root_dir='.')\n"
+        findings = check_excessive_agency(str(tmp_path / "app.py"), code)
+        assert findings, "Expected LLM08 finding"
+        assert findings[0]["severity"] == "LOW", (
+            f"FileManagementToolkit must be LOW; got {findings[0]['severity']}"
+        )
+
+    def test_sarif_uses_rule_specific_help_uri(self, capsys):
+        """SARIF output must use rule-specific OWASP helpUri for each rule."""
+        import json as _json
+        from io import StringIO
+        from rich.console import Console
+        from llmarmor.formatters import format_sarif
+        finding = {
+            "rule_id": "LLM01",
+            "rule_name": "Prompt Injection",
+            "severity": "HIGH",
+            "filepath": "app.py",
+            "line": 10,
+            "description": "Test finding.",
+            "fix_suggestion": "Fix it.",
+            "reference_url": "https://genai.owasp.org/llmrisk/llm01-prompt-injection/",
+        }
+        console = Console(file=StringIO(), width=120)
+        format_sarif([finding], console, "/p")
+        parsed = _json.loads(capsys.readouterr().out)
+        rules = parsed["runs"][0]["tool"]["driver"]["rules"]
+        assert rules, "SARIF should have rules"
+        llm01_rule = next((r for r in rules if r["id"] == "LLM01"), None)
+        assert llm01_rule is not None, "SARIF must include LLM01 rule"
+        assert "llm01" in llm01_rule["helpUri"], (
+            f"LLM01 helpUri must be rule-specific; got {llm01_rule['helpUri']}"
+        )
+
+    def test_sarif_includes_reference_url_in_properties(self, capsys):
+        """SARIF results must include reference_url in properties when available."""
+        import json as _json
+        from io import StringIO
+        from rich.console import Console
+        from llmarmor.formatters import format_sarif
+        finding = {
+            "rule_id": "LLM01",
+            "rule_name": "Prompt Injection",
+            "severity": "HIGH",
+            "filepath": "app.py",
+            "line": 10,
+            "description": "Test finding.",
+            "fix_suggestion": "Fix it.",
+            "reference_url": "https://genai.owasp.org/llmrisk/llm01-prompt-injection/",
+        }
+        console = Console(file=StringIO(), width=120)
+        format_sarif([finding], console, "/p")
+        parsed = _json.loads(capsys.readouterr().out)
+        results = parsed["runs"][0]["results"]
+        assert results, "SARIF should have results"
+        props = results[0].get("properties", {})
+        assert "reference_url" in props, "SARIF result must have reference_url in properties"
+
+
+class TestStrictUserRoleSeverity:
+    """Tests for the corrected strict mode user-role severity (LOW, not MEDIUM)."""
+
+    def test_strict_user_role_plain_var_is_low_severity(self, tmp_path):
+        """In strict mode, plain tainted variable as user-role content must be LOW severity."""
+        from llmarmor.ast_analysis import analyze
+        code = """\
+def handle(user):
+    msg = {"role": "user", "content": user}
+    return msg
+"""
+        py_file = tmp_path / "app.py"
+        py_file.write_text(code)
+        result = analyze(str(py_file), code, strict=True)
+        llm01 = [f for f in result["findings"] if f["rule_id"] == "LLM01"]
+        assert llm01, "Expected LLM01 finding in strict mode"
+        assert llm01[0]["severity"] == "LOW", (
+            f"Strict mode user-role plain var must be LOW (not MEDIUM); "
+            f"got: {llm01[0]['severity']}"
+        )
+
+    def test_strict_system_role_plain_var_is_still_medium(self, tmp_path):
+        """In strict mode, plain tainted variable as system-role content must remain MEDIUM."""
+        from llmarmor.ast_analysis import analyze
+        code = """\
+def handle(user):
+    msg = {"role": "system", "content": user}
+    return msg
+"""
+        py_file = tmp_path / "app.py"
+        py_file.write_text(code)
+        result = analyze(str(py_file), code, strict=True)
+        llm01 = [f for f in result["findings"] if f["rule_id"] == "LLM01"]
+        assert llm01, "Expected LLM01 finding for system role in strict mode"
+        assert llm01[0]["severity"] == "MEDIUM", (
+            f"Strict mode system-role plain var must be MEDIUM; got: {llm01[0]['severity']}"
+        )
+
+
+class TestStructuredMessageTemplate:
+    """Tests for the structured What/Why/Fix/Ref template in formatted output."""
+
+    _FINDING_WITH_WHY = {
+        "rule_id": "LLM01",
+        "rule_name": "Prompt Injection",
+        "severity": "HIGH",
+        "filepath": "app/chat.py",
+        "line": 42,
+        "description": "User input is interpolated into a prompt string.",
+        "fix_suggestion": "Pass user input as a separate 'role: user' message.",
+        "why": "An attacker can override system instructions.",
+        "reference_url": "https://genai.owasp.org/llmrisk/llm01-prompt-injection/",
+    }
+
+    def _make_console(self):
+        from io import StringIO
+        from rich.console import Console
+        return Console(file=StringIO(), width=120)
+
+    def test_flat_format_shows_what_why_fix_ref(self):
+        """Flat format must render What/Why/Fix/Ref structured blocks."""
+        from llmarmor.formatters import format_flat
+        console = self._make_console()
+        format_flat([self._FINDING_WITH_WHY], console, "/p")
+        output = console.file.getvalue()
+        assert "What:" in output, "Flat format should show 'What:' label"
+        assert "Why:" in output, "Flat format should show 'Why:' label"
+        assert "Fix:" in output, "Flat format should show 'Fix:' label"
+        assert "Ref:" in output, "Flat format should show 'Ref:' label"
+        assert "LLM01" in output, "Flat format should show rule ID"
+        assert "HIGH" in output, "Flat format should show severity"
+
+    def test_grouped_format_shows_ref_url(self):
+        """Grouped format must include the Ref URL after the Fix line."""
+        from llmarmor.formatters import format_grouped
+        console = self._make_console()
+        format_grouped([self._FINDING_WITH_WHY], console, "/p")
+        output = console.file.getvalue()
+        assert "https://genai.owasp.org/llmrisk/llm01-prompt-injection/" in output, (
+            "Grouped format should include the reference URL"
+        )
+
+    def test_json_output_includes_reference_url(self, capsys):
+        """JSON output grouped findings must include reference_url."""
+        import json as _json
+        from io import StringIO
+        from rich.console import Console
+        from llmarmor.formatters import format_json
+        console = Console(file=StringIO(), width=120)
+        format_json([self._FINDING_WITH_WHY], console, "/p")
+        parsed = _json.loads(capsys.readouterr().out)
+        assert parsed["findings"], "JSON should have findings"
+        finding = parsed["findings"][0]
+        assert "reference_url" in finding, "JSON grouped finding must include reference_url"
+        assert "llm01" in finding["reference_url"], "reference_url must be LLM01-specific"
+
+    def test_markdown_output_shows_why_field(self, capsys):
+        """Markdown output must include the Why field in rule sections."""
+        from io import StringIO
+        from rich.console import Console
+        from llmarmor.formatters import format_markdown
+        console = Console(file=StringIO(), width=120)
+        format_markdown([self._FINDING_WITH_WHY], console, "/p")
+        output = capsys.readouterr().out
+        assert "**Why**:" in output, "Markdown should include 'Why:' field"
+        assert "An attacker can override" in output, "Markdown should include the why content"
+
+    def test_json_output_includes_why_field(self, capsys):
+        """JSON output grouped findings must include why field."""
+        import json as _json
+        from io import StringIO
+        from rich.console import Console
+        from llmarmor.formatters import format_json
+        console = Console(file=StringIO(), width=120)
+        format_json([self._FINDING_WITH_WHY], console, "/p")
+        parsed = _json.loads(capsys.readouterr().out)
+        assert parsed["findings"], "JSON should have findings"
+        finding = parsed["findings"][0]
+        assert "why" in finding, "JSON grouped finding must include why field"

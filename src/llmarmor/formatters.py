@@ -2,9 +2,9 @@
 
 Supported formats:
 - ``grouped`` (default): findings grouped by rule, one section per rule
-- ``flat``: one line per finding (legacy format)
+- ``flat``: one finding per block with structured What/Why/Fix/Ref template
 - ``json``: grouped JSON with ``meta`` and ``findings`` blocks
-- ``md`` / ``markdown``: Markdown report
+- ``md`` / ``markdown``: Markdown report with structured sections
 - ``sarif``: SARIF 2.1.0 format for GitHub Code Scanning and security dashboards
 """
 
@@ -13,12 +13,12 @@ import os
 import shutil
 from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Sequence
+from typing import IO, Sequence
 
 from rich.console import Console
-from rich.table import Table
 
 from llmarmor import __version__
+from llmarmor.messages import RULE_URLS
 
 # ---------------------------------------------------------------------------
 # Path truncation helper
@@ -98,14 +98,17 @@ def _severity_sort_key(severity: str) -> int:
 # Grouped format (default)
 # ---------------------------------------------------------------------------
 
-_RULE_NAMES: dict[str, str] = {
-    "LLM01": "Prompt Injection",
-    "LLM02": "Sensitive Information Disclosure",
-    "LLM05": "Improper Output Handling",
-    "LLM07": "System Prompt Leakage",
-    "LLM08": "Excessive Agency",
-    "LLM10": "Unbounded Consumption",
-}
+def _get_rule_name(rule_id: str, fallback: str = "") -> str:
+    """Return the canonical rule name for *rule_id* from the registry.
+
+    Falls back to *fallback* (or the rule_id itself) if the registry does not
+    know the rule.  Using the registry avoids duplicating the _RULE_NAMES dict.
+    """
+    try:
+        from llmarmor.registry import registry as _registry
+        return _registry.get(rule_id).name
+    except (KeyError, Exception):
+        return fallback or rule_id
 
 
 def format_grouped(findings: Sequence[dict], console: Console, scan_path: str) -> None:
@@ -131,7 +134,7 @@ def format_grouped(findings: Sequence[dict], console: Console, scan_path: str) -
         # Use the severity of the worst finding in the group for the header.
         worst_sev = min(group, key=lambda f: _severity_sort_key(f["severity"]))["severity"]
         color = _SEVERITY_COLORS.get(worst_sev, "white")
-        rule_name = group[0].get("rule_name") or _RULE_NAMES.get(rule_id, rule_id)
+        rule_name = group[0].get("rule_name") or _get_rule_name(rule_id)
 
         console.print(
             f"\n[bold]━━━ {rule_id}: {rule_name} ([{color}]{worst_sev}[/{color}]) ━━━[/bold]"
@@ -161,6 +164,11 @@ def format_grouped(findings: Sequence[dict], console: Console, scan_path: str) -
         if fix:
             console.print(f"\n[dim]Fix: {fix}[/dim]")
 
+        # Reference URL — show after the fix line.
+        ref_url = next((f.get("reference_url") for f in group if f.get("reference_url")), None)
+        if ref_url:
+            console.print(f"[dim]Ref: {ref_url}[/dim]")
+
     # Summary line
     sev_counts: dict[str, int] = {}
     for f in findings:
@@ -174,38 +182,67 @@ def format_grouped(findings: Sequence[dict], console: Console, scan_path: str) -
 # Flat format (legacy, one line per finding)
 # ---------------------------------------------------------------------------
 
+def _first_sentence(text: str) -> str:
+    """Return the first sentence of *text* (up to the first period, or full text if short)."""
+    if not text:
+        return text
+    idx = text.find(". ")
+    if idx > 0 and idx < 120:
+        return text[: idx + 1]
+    return text[:120].rstrip() + ("..." if len(text) > 120 else "")
+
+
 def format_flat(findings: Sequence[dict], console: Console, scan_path: str) -> None:
-    """Print one finding per line, grouped by severity (legacy format)."""
+    """Print one structured block per finding, ordered by severity.
+
+    Each block follows the What/Why/Fix/Ref template:
+
+    .. code-block:: text
+
+        [LLM01] [HIGH] — <one-line summary>
+          Location: path/to/file.py:42
+
+        What: <description>
+        Why:  <attack scenario>
+        Fix:  <remediation>
+        Ref:  <OWASP URL>
+    """
     if not findings:
         console.print("[green]✅ No vulnerabilities detected.[/green]")
         return
 
-    for severity in _SEVERITY_ORDER:
-        group = [f for f in findings if f["severity"] == severity]
-        if not group:
-            continue
+    # Sort by severity (most critical first), then filepath/line.
+    sorted_findings = sorted(
+        findings,
+        key=lambda f: (_severity_sort_key(f["severity"]), f.get("filepath", ""), f.get("line", 0)),
+    )
 
-        color = _SEVERITY_COLORS[severity]
-        table = Table(
-            title=f"[{color}]{severity}[/{color}] — {len(group)} finding(s)",
-            show_lines=True,
+    for f in sorted_findings:
+        rule_id = f["rule_id"]
+        severity = f["severity"]
+        color = _SEVERITY_COLORS.get(severity, "white")
+        summary = _first_sentence(f.get("description", ""))
+        fp = truncate_path(f.get("filepath", ""))
+        line = f.get("line", 0)
+        what = f.get("description", "")
+        why = f.get("why", "")
+        fix = f.get("fix_suggestion", "")
+        ref = f.get("reference_url", RULE_URLS.get(rule_id, ""))
+
+        console.print(
+            f"\n[bold][{rule_id}] [[{color}]{severity}[/{color}]] — {summary}[/bold]"
         )
-        table.add_column("Rule", style="bold", width=8)
-        table.add_column("File", no_wrap=False)
-        table.add_column("Line", width=6)
-        table.add_column("Description")
+        console.print(f"  [cyan]Location:[/cyan] {fp}:{line}")
+        if what:
+            console.print(f"\n[bold]What:[/bold] {what}")
+        if why:
+            console.print(f"[bold]Why: [/bold] {why}")
+        if fix:
+            console.print(f"[bold]Fix: [/bold] {fix}")
+        if ref:
+            console.print(f"[bold]Ref: [/bold] [link={ref}]{ref}[/link]")
 
-        for f in group:
-            table.add_row(
-                f["rule_id"],
-                truncate_path(f["filepath"]),
-                str(f["line"]),
-                f["description"],
-            )
-
-        console.print(table)
-
-    # Summary panel
+    # Summary line
     sev_counts: dict[str, int] = {}
     for f in findings:
         sev_counts[f["severity"]] = sev_counts.get(f["severity"], 0) + 1
@@ -239,12 +276,15 @@ def _group_findings(findings: Sequence[dict]) -> list[dict]:
     for f in findings:
         key = (f["rule_id"], f["severity"])
         if key not in groups:
+            rule_id = f["rule_id"]
             groups[key] = {
-                "rule_id": f["rule_id"],
-                "rule_name": f.get("rule_name") or _RULE_NAMES.get(f["rule_id"], f["rule_id"]),
+                "rule_id": rule_id,
+                "rule_name": f.get("rule_name") or _get_rule_name(rule_id),
                 "severity": f["severity"],
                 "description": f.get("description", ""),
                 "fix_suggestion": f.get("fix_suggestion", ""),
+                "why": f.get("why", ""),
+                "reference_url": f.get("reference_url", RULE_URLS.get(rule_id, "")),
                 "locations": [],
             }
         groups[key]["locations"].append(
@@ -321,7 +361,12 @@ def format_markdown(
 
         description = group.get("description", "")
         if description:
-            lines.append(description)
+            lines.append(f"**What**: {description}")
+            lines.append("")
+
+        why = group.get("why", "")
+        if why:
+            lines.append(f"**Why**: {why}")
             lines.append("")
 
         lines.append("| File | Line |")
@@ -333,6 +378,11 @@ def format_markdown(
         if fix:
             lines.append("")
             lines.append(f"**Fix**: {fix}")
+
+        ref = group.get("reference_url", "")
+        if ref:
+            lines.append("")
+            lines.append(f"**Ref**: [{ref}]({ref})")
 
         lines.append("")
         lines.append("---")
@@ -374,6 +424,13 @@ def format_sarif(
     - CRITICAL / HIGH → error
     - MEDIUM → warning
     - LOW / INFO → note
+
+    SARIF compliance notes:
+    - ``message.text`` is concise and descriptive (not the structured What/Why/Fix/Ref
+      template — that is for human-readable formats only).
+    - ``fixes[]`` carries remediation guidance.
+    - ``helpUri`` on each rule points to the OWASP rule-specific page.
+    - ``reference_url`` is included in result ``properties`` when available.
     """
     # Build the rules array from unique rule IDs encountered in findings.
     rules_seen: dict[str, dict] = {}
@@ -384,12 +441,14 @@ def format_sarif(
             # Truncate to a reasonable length for the short description.
             if len(short_desc) > 120:
                 short_desc = short_desc[:117] + "..."
+            # Use rule-specific OWASP URL if available, fall back to top-level page.
+            help_uri = RULE_URLS.get(rule_id, _OWASP_HELP_URI)
             rules_seen[rule_id] = {
                 "id": rule_id,
                 "name": f.get("rule_name", rule_id),
                 "shortDescription": {"text": short_desc or rule_id},
                 "fullDescription": {"text": f.get("description", "")},
-                "helpUri": _OWASP_HELP_URI,
+                "helpUri": help_uri,
                 "defaultConfiguration": {
                     "level": _SARIF_LEVEL.get(f["severity"], "warning"),
                 },
@@ -421,6 +480,16 @@ def format_sarif(
         }
         if fix:
             result["fixes"] = [{"description": {"text": fix}}]
+        # Include reference_url and why in properties when available.
+        extra_props: dict = {}
+        ref_url = f.get("reference_url", "")
+        if ref_url:
+            extra_props["reference_url"] = ref_url
+        why = f.get("why", "")
+        if why:
+            extra_props["why"] = why
+        if extra_props:
+            result["properties"] = extra_props
         results.append(result)
 
     sarif_output = {
@@ -468,6 +537,9 @@ VALID_FORMATS = list(_FORMATS.keys())
 # Severities hidden in non-verbose mode.
 _HIDDEN_IN_NORMAL = frozenset({"INFO", "LOW"})
 
+# Formats that write to stdout via print() rather than the Rich console.
+_STDOUT_FORMATS = frozenset({"json", "md", "markdown", "sarif"})
+
 
 def render(
     findings: Sequence[dict],
@@ -476,29 +548,80 @@ def render(
     scan_path: str,
     verbose: bool = False,
     mode: str = "normal",
+    quiet: bool = False,
+    output_file: str | None = None,
 ) -> None:
     """Render *findings* using the specified *fmt* format.
 
     :param findings: list of finding dicts from :func:`~llmarmor.scanner.run_scan`
-    :param fmt: one of ``grouped``, ``flat``, ``json``, ``md``, ``markdown``
+    :param fmt: one of ``grouped``, ``flat``, ``json``, ``md``, ``markdown``, ``sarif``
     :param console: Rich Console instance (used for terminal formats)
     :param scan_path: the path that was scanned (shown in headers)
     :param verbose: when ``True``, include INFO and LOW findings in output.
                     When ``False`` (default), INFO and LOW are hidden.
     :param mode: scan mode string for JSON/Markdown metadata
                  (``"normal"``, ``"strict"``, ``"verbose"``, ``"strict+verbose"``)
+    :param quiet: when ``True``, suppress ALL output. Only the exit code communicates results.
+    :param output_file: when set, write formatter output to this file path instead of stdout.
+                        For grouped/flat (Rich formats), plain text is written (no markup).
+                        For json/md/sarif, the output is written directly.
     :raises ValueError: if *fmt* is not recognised
     """
     formatter = _FORMATS.get(fmt)
     if formatter is None:
         raise ValueError(f"Unknown format {fmt!r}. Valid options: {', '.join(VALID_FORMATS)}")
 
+    if quiet:
+        return  # Suppress all output; exit code communicates the result.
+
     # Filter out INFO and LOW in non-verbose mode.
     if not verbose:
         findings = [f for f in findings if f["severity"] not in _HIDDEN_IN_NORMAL]
 
+    if output_file:
+        _render_to_file(findings, fmt, formatter, scan_path, mode, output_file)
+        return
+
     # JSON, Markdown, and SARIF formatters accept an extra ``mode`` kwarg.
-    if fmt in ("json", "md", "markdown", "sarif"):
+    if fmt in _STDOUT_FORMATS:
         formatter(findings, console, scan_path, mode=mode)  # type: ignore[call-arg]
     else:
         formatter(findings, console, scan_path)
+
+
+def _render_to_file(
+    findings: Sequence[dict],
+    fmt: str,
+    formatter: object,
+    scan_path: str,
+    mode: str,
+    output_file: str,
+) -> None:
+    """Write formatted output to *output_file*.
+
+    For grouped/flat (Rich formats), plain text is written (ANSI/markup stripped).
+    For json/md/sarif, the output is written directly.
+    """
+    import io
+
+    if fmt in _STDOUT_FORMATS:
+        # Capture stdout-based output (print calls) and write to file.
+        old_stdout = __import__("sys").stdout
+        buf = io.StringIO()
+        __import__("sys").stdout = buf
+        try:
+            formatter(findings, None, scan_path, mode=mode)  # type: ignore[call-arg]
+        finally:
+            __import__("sys").stdout = old_stdout
+        with open(output_file, "w", encoding="utf-8") as fh:
+            fh.write(buf.getvalue())
+    else:
+        # Rich-based formats: render to a plain-text console, then write to file.
+        from io import StringIO
+        from rich.console import Console as _Console
+
+        buf = StringIO()
+        file_console = _Console(file=buf, highlight=False, markup=False, width=120)
+        formatter(findings, file_console, scan_path)  # type: ignore[call-arg]
+        with open(output_file, "w", encoding="utf-8") as fh:
+            fh.write(buf.getvalue())

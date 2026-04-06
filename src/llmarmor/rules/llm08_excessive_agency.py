@@ -15,14 +15,27 @@ HIGH      ShellTool / PythonREPLTool / CodeInterpreterTool
 HIGH      subprocess.run(['powershell'/'bash'/'cmd'/'sh', ...]) — shell interpreter invocation
 HIGH      getattr(module, llm_name)() — dynamic dispatch via getattr
 MEDIUM    auto_approve=True / human_in_the_loop=False
-MEDIUM    FileManagementToolkit / WriteFileTool
+LOW       FileManagementToolkit / WriteFileTool (capability concern, not confirmed exploit)
 INFO      Broad tool description / no explicit allowlist (--strict → MEDIUM)
 """
 
 import re
 
+from llmarmor.messages import CATALOG, RULE_URLS
+
 RULE_ID = "LLM08"
 RULE_NAME = "Excessive Agency"
+_REF = RULE_URLS[RULE_ID]
+
+_GLOBALS_MSG = CATALOG[("LLM08", "globals_dispatch")]
+_WILDCARD_MSG = CATALOG[("LLM08", "wildcard_tools")]
+_DANG_TOOL_MSG = CATALOG[("LLM08", "dangerous_tool")]
+_SUBPROC_MSG = CATALOG[("LLM08", "subprocess_shell")]
+_GETATTR_MSG = CATALOG[("LLM08", "getattr_dispatch")]
+_APPROVAL_MSG = CATALOG[("LLM08", "disabled_approval")]
+_FS_MSG = CATALOG[("LLM08", "filesystem_tools")]
+_BROAD_MSG = CATALOG[("LLM08", "broad_description")]
+_LOOP_MSG = CATALOG[("LLM08", "agent_loop")]
 
 # ---------------------------------------------------------------------------
 # Pattern definitions
@@ -93,47 +106,15 @@ _AGENT_LOOP_EXEC = re.compile(
 # Fix suggestions
 # ---------------------------------------------------------------------------
 
-_FIX_DYNAMIC_DISPATCH = (
-    "Never call globals()[name]() or eval(name) with LLM-provided function names. "
-    "Use an explicit allowlist: `ALLOWED = {'func_a': func_a}; ALLOWED[name]()`. "
-    "Validate and restrict the callable set strictly."
-)
-_FIX_WILDCARD = (
-    "Replace wildcard tool access (tools=['*']) with an explicit allowlist of safe tools. "
-    "Apply the principle of least privilege — only expose the minimum tools an agent needs."
-)
-_FIX_DANGEROUS_TOOL = (
-    "Avoid granting LLM agents access to shell execution or REPL tools unless strictly "
-    "necessary. Prefer purpose-built, restricted tools and apply sandboxing."
-)
-_FIX_SUBPROCESS_SHELL_EXEC = (
-    "Avoid passing shell interpreter names (powershell, bash, cmd, sh, etc.) directly "
-    "to subprocess calls in agent-accessible code. If shell execution is required, "
-    "validate and restrict the command to a strict allowlist and avoid exposing this "
-    "capability to LLM agents."
-)
-_FIX_GETATTR = (
-    "Never dispatch function calls with LLM-provided names via getattr(). "
-    "Validate the name against an explicit allowlist before calling: "
-    "`if name in ALLOWED_FUNCTIONS: getattr(obj, name)()`."
-)
-_FIX_APPROVAL = (
-    "Do not disable human-in-the-loop approval gates for LLM agents. "
-    "Require explicit human confirmation for high-impact or irreversible actions."
-)
-_FIX_FILESYSTEM = (
-    "Restrict filesystem tools to a specific directory scope. "
-    "Avoid granting LLM agents broad write/delete access; "
-    "scope FileManagementToolkit to a sandboxed directory."
-)
-_FIX_BROAD_DESC = (
-    "Provide an explicit tool allowlist to the agent instead of permissive descriptions. "
-    "Restrict agent capabilities to the minimum required for the task."
-)
-_FIX_AGENT_LOOP = (
-    "Validate the tool or function name returned by the LLM against an explicit allowlist "
-    "before dispatching. Never execute LLM-chosen function names without validation."
-)
+_FIX_DYNAMIC_DISPATCH = _GLOBALS_MSG.fix
+_FIX_WILDCARD = _WILDCARD_MSG.fix
+_FIX_DANGEROUS_TOOL = _DANG_TOOL_MSG.fix
+_FIX_SUBPROCESS_SHELL_EXEC = _SUBPROC_MSG.fix
+_FIX_GETATTR = _GETATTR_MSG.fix
+_FIX_APPROVAL = _APPROVAL_MSG.fix
+_FIX_FILESYSTEM = _FS_MSG.fix
+_FIX_BROAD_DESC = _BROAD_MSG.fix
+_FIX_AGENT_LOOP = _LOOP_MSG.fix
 
 
 def check_excessive_agency(
@@ -164,6 +145,8 @@ def check_excessive_agency(
                         "attacker can invoke any function in the module."
                     ),
                     "fix_suggestion": _FIX_DYNAMIC_DISPATCH,
+                    "why": _GLOBALS_MSG.why,
+                    "reference_url": _REF,
                 }
             )
             continue
@@ -183,6 +166,8 @@ def check_excessive_agency(
                         "principle of least privilege."
                     ),
                     "fix_suggestion": _FIX_WILDCARD,
+                    "why": _WILDCARD_MSG.why,
+                    "reference_url": _REF,
                 }
             )
             continue
@@ -203,6 +188,8 @@ def check_excessive_agency(
                         "command execution."
                     ),
                     "fix_suggestion": _FIX_DANGEROUS_TOOL,
+                    "why": _DANG_TOOL_MSG.why,
+                    "reference_url": _REF,
                 }
             )
             continue
@@ -223,6 +210,8 @@ def check_excessive_agency(
                         "OS-level command execution capability."
                     ),
                     "fix_suggestion": _FIX_SUBPROCESS_SHELL_EXEC,
+                    "why": _SUBPROC_MSG.why,
+                    "reference_url": _REF,
                 }
             )
             continue
@@ -243,6 +232,8 @@ def check_excessive_agency(
                         "can be directed to call arbitrary functions."
                     ),
                     "fix_suggestion": _FIX_GETATTR,
+                    "why": _GETATTR_MSG.why,
+                    "reference_url": _REF,
                 }
             )
             continue
@@ -262,18 +253,22 @@ def check_excessive_agency(
                         "the risk of unintended consequences."
                     ),
                     "fix_suggestion": _FIX_APPROVAL,
+                    "why": _APPROVAL_MSG.why,
+                    "reference_url": _REF,
                 }
             )
             continue
 
-        # --- MEDIUM: broad filesystem tools ---
+        # --- LOW: broad filesystem tools ---
+        # Presence of these tools alone is a "review this" signal, not a confirmed
+        # vulnerability like auto_approve=True. Downgraded from MEDIUM to LOW.
         m = _FILESYSTEM_TOOLS.search(line)
         if m:
             findings.append(
                 {
                     "rule_id": RULE_ID,
                     "rule_name": RULE_NAME,
-                    "severity": "MEDIUM",
+                    "severity": "LOW",
                     "filepath": str(filepath),
                     "line": i + 1,
                     "description": (
@@ -282,6 +277,8 @@ def check_excessive_agency(
                         "read, write, or delete arbitrary files."
                     ),
                     "fix_suggestion": _FIX_FILESYSTEM,
+                    "why": _FS_MSG.why,
+                    "reference_url": _REF,
                 }
             )
             continue
@@ -302,6 +299,8 @@ def check_excessive_agency(
                         "explicit tool allowlist is enforced."
                     ),
                     "fix_suggestion": _FIX_BROAD_DESC,
+                    "why": _BROAD_MSG.why,
+                    "reference_url": _REF,
                 }
             )
             continue
@@ -321,6 +320,8 @@ def check_excessive_agency(
                         "before dispatching."
                     ),
                     "fix_suggestion": _FIX_AGENT_LOOP,
+                    "why": _LOOP_MSG.why,
+                    "reference_url": _REF,
                 }
             )
             continue

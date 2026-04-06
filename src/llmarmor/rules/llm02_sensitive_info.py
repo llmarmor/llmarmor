@@ -1,19 +1,18 @@
 """LLM02: Sensitive Information Disclosure — hardcoded API key detection."""
 
+from llmarmor.messages import CATALOG, RULE_URLS
 from llmarmor.secret_patterns import PLACEHOLDER_VALUE_PATTERN, SECRET_PATTERNS, TEST_VAR_PATTERN
 
 RULE_ID = "LLM02"
 RULE_NAME = "Sensitive Information Disclosure"
 SEVERITY = "CRITICAL"
+_REF = RULE_URLS[RULE_ID]
+_MSG = CATALOG[("LLM02", "hardcoded_api_key")]
 
 _PATTERNS = SECRET_PATTERNS
 _TEST_VAR_PATTERN = TEST_VAR_PATTERN
 
-FIX_SUGGESTION = (
-    "Never hardcode API keys in source code. Store secrets in environment variables "
-    "and access them via os.environ.get('KEY_NAME'). Use a secrets manager for "
-    "production deployments."
-)
+FIX_SUGGESTION = _MSG.fix
 
 
 def check_sensitive_info(filepath: str, content: str) -> list[dict]:
@@ -46,6 +45,8 @@ def check_sensitive_info(filepath: str, content: str) -> list[dict]:
                             "version control exposes them to anyone with repository access."
                         ),
                         "fix_suggestion": FIX_SUGGESTION,
+                        "why": _MSG.why,
+                        "reference_url": _REF,
                     }
                 )
                 break  # one finding per line is enough
