@@ -3377,10 +3377,15 @@ class TestSARIFFormat:
 
 
 class TestGroupedFormatMixedSeverity:
-    """Tests for per-location severity annotation in mixed-severity rule groups."""
+    """Tests for grouped format behaviour when the same rule emits multiple severities.
 
-    def test_mixed_severity_group_shows_annotation(self):
-        """When a rule group has mixed severities, lower-severity locations must be annotated."""
+    Since grouped format now groups by (rule_id, severity), each section header
+    always reflects exactly the severity of the findings inside it — eliminating
+    the confusing 'header says HIGH but finding inside is MEDIUM' pattern.
+    """
+
+    def test_mixed_severity_rule_produces_separate_sections(self):
+        """Same rule at different severities must produce separate group sections."""
         import io
         from rich.console import Console
         from llmarmor.formatters import render
@@ -3409,8 +3414,23 @@ class TestGroupedFormatMixedSeverity:
         console = Console(file=buf, highlight=False)
         render(findings, fmt="grouped", console=console, scan_path=".", verbose=True)
         output = buf.getvalue()
-        # The INFO location must have a severity annotation
-        assert "(INFO)" in output, f"INFO location must be annotated; got:\n{output}"
+        # Each severity gets its own section header — no mixed-severity confusion.
+        assert "LLM01" in output and "(HIGH)" in output, (
+            "Output must include an LLM01 (HIGH) section header"
+        )
+        assert "(INFO)" in output, (
+            "Output must include a separate (INFO) section header for the INFO finding"
+        )
+        # Per-location severity annotations must NOT appear — each group is homogeneous.
+        for line in output.splitlines():
+            if "app.py:10" in line:
+                assert "(HIGH)" not in line, (
+                    f"Location lines must not carry per-finding annotations; got: {line}"
+                )
+            if "app.py:20" in line:
+                assert "(INFO)" not in line, (
+                    f"Location lines must not carry per-finding annotations; got: {line}"
+                )
 
     def test_uniform_severity_group_shows_no_annotation(self):
         """When all findings in a group have the same severity, no annotation is shown."""
@@ -3442,7 +3462,7 @@ class TestGroupedFormatMixedSeverity:
         console = Console(file=buf, highlight=False)
         render(findings, fmt="grouped", console=console, scan_path=".", verbose=True)
         output = buf.getvalue()
-        # Lines should not have severity annotations since they're uniform
+        # Location lines must not carry per-finding severity annotations.
         for line in output.splitlines():
             if "app.py:" in line:
                 assert "(HIGH)" not in line, (

@@ -61,7 +61,7 @@ pip install -e ".[dev]"
 ## Quick Start
 
 ```bash
-# Scan the current directory (CRITICAL, HIGH, MEDIUM findings shown)
+# Scan the current directory
 llmarmor scan .
 
 # Scan a specific project
@@ -73,14 +73,17 @@ llmarmor scan ./my-llm-app/ --verbose
 # Strict mode — flag borderline patterns that normal mode skips
 llmarmor scan ./my-llm-app/ --strict
 
-# Strict + verbose — detect everything and show everything
-llmarmor scan ./my-llm-app/ --strict --verbose
+# Save a JSON report to file
+llmarmor scan ./my-llm-app/ -f json -o report.json
 
-# Export results as JSON for CI/CD
-llmarmor scan ./my-llm-app/ -f json > report.json
+# Save a Markdown report to file
+llmarmor scan ./my-llm-app/ -f md -o SECURITY_REPORT.md
 
-# Export a Markdown report
-llmarmor scan ./my-llm-app/ -f md > SECURITY_REPORT.md
+# SARIF output for GitHub Code Scanning
+llmarmor scan ./my-llm-app/ -f sarif -o results.sarif
+
+# Silent CI mode — exit code only, no output
+llmarmor scan ./my-llm-app/ --quiet
 
 # List all available rules
 llmarmor rules
@@ -126,8 +129,20 @@ Options:
 #### Examples
 
 ```bash
-# Default grouped output — CRITICAL, HIGH, MEDIUM only
+# Default scan — shows CRITICAL, HIGH, MEDIUM findings
 llmarmor scan ./src
+
+# Save JSON report to file
+llmarmor scan ./src -f json -o findings.json
+
+# Silent CI gate — exit code only
+llmarmor scan ./src --quiet && echo "Clean" || echo "Issues found"
+
+# SARIF for GitHub Code Scanning
+llmarmor scan ./src -f sarif -o results.sarif
+
+# Markdown report for PR comments or stakeholders
+llmarmor scan ./src -f md -o SECURITY_REPORT.md
 
 # Show everything including INFO and LOW
 llmarmor scan ./src --verbose
@@ -135,32 +150,17 @@ llmarmor scan ./src --verbose
 # Strict mode — flag borderline patterns too
 llmarmor scan ./src --strict
 
-# Strict mode with verbose output — maximum coverage
+# Strict + verbose — maximum coverage and visibility
 llmarmor scan ./src --strict --verbose
 
-# Flat output (one structured block per finding)
+# Flat output (detailed per-finding blocks with What/Why/Fix/Ref)
 llmarmor scan ./src -f flat
 
-# JSON output to file
-llmarmor scan ./src -f json > findings.json
-
-# JSON output to file using --output flag
-llmarmor scan ./src -f json -o findings.json
-
-# SARIF output for GitHub Code Scanning
-llmarmor scan ./src -f sarif > results.sarif
-
-# Markdown report to file using --output flag
-llmarmor scan ./src -f md -o SECURITY_REPORT.md
-
-# Silent mode for CI (exit code only)
-llmarmor scan ./src --quiet && echo "Clean" || echo "Issues found"
+# Combine strict + verbose + JSON for full CI audit report
+llmarmor scan ./src --strict --verbose -f json -o full-report.json
 
 # Use a configuration file
 llmarmor scan ./src --config .llmarmor.yaml
-
-# Combine strict + verbose + JSON for full CI report
-llmarmor scan ./src --strict --verbose -f json > full-report.json
 ```
 
 ### `llmarmor rules`
@@ -260,11 +260,11 @@ code the process returns, and what action you should take before merging.
 
 | Level | Icon | Meaning | Exit Code | Shown By Default |
 |-------|------|---------|-----------|------------------|
-| **CRITICAL** | 🔴 | Confirmed high-impact vulnerability — real secrets in source code, tainted user input passed to `eval()`/`exec()`/shell commands, or attacker-controlled dynamic dispatch via `globals()` | `2` | ✅ Yes |
-| **HIGH** | 🟠 | High-confidence security issue — prompt injection via string interpolation, SQL/HTML injection from LLM output, wildcard tool access, or dangerous tool classes | `1` | ✅ Yes |
-| **MEDIUM** | 🟡 | Likely issue requiring attention — missing `max_tokens` on LLM API calls, disabled human-in-the-loop approval, broad filesystem tool access, or strict-mode promotions | `1` | ✅ Yes |
-| **LOW** | 🔵 | Possible issue worth reviewing — unsanitized user input in user-role messages, unvalidated `json.loads()` of LLM output, or broad agent tool descriptions | `0` | ❌ `--verbose` |
-| **INFO** | ⚪ | Informational observation — hardcoded system prompts in source code, eval/test context downgrades, or plain variable assignments without interpolation | `0` | ❌ `--verbose` |
+| **CRITICAL** | 🔴 | Confirmed vulnerability — hardcoded secrets, tainted input in eval/exec/shell, attacker-controlled dispatch | `2` | ✅ Yes |
+| **HIGH** | 🟠 | High-confidence issue — prompt injection via interpolation, dangerous tool classes, wildcard tool access | `1` | ✅ Yes |
+| **MEDIUM** | 🟡 | Likely issue needing review — missing `max_tokens`, disabled approval gates, strict-mode promotions | `1` | ✅ Yes |
+| **LOW** | 🔵 | Worth reviewing — unsanitized user input in user-role messages, filesystem tools without scoping | `0` | ❌ `--verbose` |
+| **INFO** | ⚪ | Informational — hardcoded system prompts, eval/test context downgrades, plain variable assignments | `0` | ❌ `--verbose` |
 
 **Exit code summary:**
 
@@ -315,8 +315,34 @@ Summary: 4 finding(s) (2 CRITICAL, 2 MEDIUM)
 
 ### Flat
 
-One line per finding grouped by severity. Useful for grep-friendly output
-and editor integrations.
+One structured block per finding, ordered by severity. Each block includes
+a What/Why/Fix/Ref breakdown. Useful for detailed per-finding review,
+piping to other tools, and terminal output where you want full context
+for every finding.
+
+```bash
+llmarmor scan ./src -f flat
+```
+
+```
+[LLM01] [CRITICAL] — User input interpolated into prompt via f-string.
+  Location: app/chat.py:42
+
+What: User-controlled input is embedded into an LLM prompt string via f-string interpolation.
+Why:  An attacker can craft input that overrides system instructions, exfiltrates data, or hijacks model behavior.
+Fix:  Pass user input as a separate 'role: user' message. Never use f-strings to embed user data in system messages.
+Ref:  https://genai.owasp.org/llmrisk/llm01-prompt-injection/
+
+[LLM10] [MEDIUM] — LLM API call without max_tokens limit.
+  Location: services/ai.py:50
+
+What: An LLM API call is made without setting max_tokens, leaving token consumption unbounded.
+Why:  Without a token limit, a single request can generate thousands of tokens, leading to high costs and slow responses.
+Fix:  Always set max_tokens on every LLM API call. Example: client.chat.completions.create(..., max_tokens=500).
+Ref:  https://genai.owasp.org/llmrisk/llm10-unbounded-consumption/
+
+Summary: 2 finding(s) (1 CRITICAL, 1 MEDIUM)
+```
 
 ### JSON
 
@@ -324,7 +350,7 @@ Structured JSON object with a `meta` block and grouped findings. Designed for
 CI/CD pipelines, SARIF conversion, and integration with dashboards.
 
 ```bash
-llmarmor scan ./src -f json > report.json
+llmarmor scan ./src -f json -o report.json
 ```
 
 ```json
@@ -350,21 +376,12 @@ llmarmor scan ./src -f json > report.json
       "rule_name": "Prompt Injection",
       "severity": "CRITICAL",
       "description": "User-controlled input interpolated into system role message via f-string.",
+      "why": "An attacker can override system instructions, exfiltrate data, or hijack model behavior.",
       "fix_suggestion": "Pass user input as a separate 'role: user' message.",
+      "reference_url": "https://genai.owasp.org/llmrisk/llm01-prompt-injection/",
       "locations": [
         {"filepath": "app/chat.py", "line": 42},
         {"filepath": "app/handlers.py", "line": 88}
-      ]
-    },
-    {
-      "rule_id": "LLM10",
-      "rule_name": "Unbounded Consumption",
-      "severity": "MEDIUM",
-      "description": "LLM API call without max_tokens set.",
-      "fix_suggestion": "Always set max_tokens on LLM API calls.",
-      "locations": [
-        {"filepath": "services/ai.py", "line": 50},
-        {"filepath": "services/ai.py", "line": 75}
       ]
     }
   ]
