@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: LLMArmor Website
+    url: https://llmarmor.dev
+    about: Visit the LLMArmor website for documentation, guides, and the latest news.
+  - name: GitHub Discussions
+    url: https://github.com/llmarmor/llmarmor/discussions
+    about: Ask questions, share ideas, or start a discussion with the community.

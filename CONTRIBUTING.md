@@ -223,3 +223,15 @@ Please be respectful and constructive in all interactions.
 
 If you experience or witness unacceptable behaviour, please report it by
 opening a GitHub issue or contacting the maintainers directly.
+
+---
+
+## OWASP LLM Top 10 Contributions
+
+Contributions that expand coverage of the
+[OWASP LLM Top 10 (2025)](https://owasp.org/www-project-top-10-for-large-language-model-applications/)
+are especially welcome. The categories not yet covered — **LLM03 (Supply Chain)**,
+**LLM04 (Data and Model Poisoning)**, **LLM08 (Vector and Embedding Weaknesses)**,
+and **LLM09 (Misinformation)** — are all open for contribution. If you're
+working on a rule for one of these, please open an issue first to discuss
+the approach before writing code.
