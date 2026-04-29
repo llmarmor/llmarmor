@@ -9,11 +9,24 @@ to catch prompt injection, leaked secrets, exposed system prompts, improper
 output handling, excessive agent permissions, and unbounded API consumption —
 across Python files, config files, notebooks, and more.
 
-[![PyPI version](https://img.shields.io/pypi/v/llmarmor.svg)](https://pypi.org/project/llmarmor/)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/github/license/llmarmor/llmarmor)](LICENSE)
+[![GitHub Stars](https://img.shields.io/github/stars/llmarmor/llmarmor?style=social)](https://github.com/llmarmor/llmarmor)
+[![PyPI version](https://img.shields.io/pypi/v/llmarmor)](https://pypi.org/project/llmarmor/)
+[![Python versions](https://img.shields.io/pypi/pyversions/llmarmor)](https://pypi.org/project/llmarmor/)
+[![Website](https://img.shields.io/badge/website-llmarmor.dev-blue)](https://llmarmor.dev)
+[![OWASP LLM Top 10](https://img.shields.io/badge/OWASP-LLM%20Top%2010-orange)](https://owasp.org/www-project-top-10-for-large-language-model-applications/)
 
 > ⚠️ **Early release** — actively under development. Star the repo to follow progress.
+
+---
+
+## 🌐 Links
+
+- **Website:** [llmarmor.dev](https://llmarmor.dev)
+- **Documentation:** [llmarmor.dev](https://llmarmor.dev)
+- **PyPI:** [pypi.org/project/llmarmor](https://pypi.org/project/llmarmor/)
+- **Issues:** [github.com/llmarmor/llmarmor/issues](https://github.com/llmarmor/llmarmor/issues)
+- **Contributing:** [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ---
 
@@ -30,6 +43,7 @@ across Python files, config files, notebooks, and more.
 - [OWASP LLM Top 10 Coverage](#owasp-llm-top-10-coverage)
 - [How It Works](#how-it-works--dual-layer-analysis)
 - [CI/CD Integration](#cicd-integration)
+- [Comparison](#comparison)
 - [Contributing](#contributing)
 - [Links](#links)
 - [License](#license)
@@ -441,23 +455,25 @@ The following directories are automatically skipped during scanning:
 
 ## OWASP LLM Top 10 Coverage
 
-| OWASP Risk | Rule | Coverage | What's Detected |
+| OWASP Risk (2025) | Rule | Coverage | What's Detected |
 |---|---|---|---|
-| LLM01 | Prompt Injection | 🟢 Strong | Regex + AST taint analysis across 6 injection vectors (f-string, .format(), %-format, concatenation, LangChain templates, aliased vars); role-aware detection distinguishes system from user role |
-| LLM02 | Sensitive Info Disclosure | 🟡 Partial | 4 LLM API key patterns (OpenAI, Anthropic, Google, HuggingFace) across all file types; does not cover PII, DB connection strings, AWS/Azure credentials, or JWT tokens |
-| LLM05 | Improper Output Handling | 🟡 Partial | eval/exec/shell/SQL/HTML sinks with variable-name heuristics; AST taint from LLM API calls; does not track taint through attribute chains like `response.choices[0].message.content` |
-| LLM06 | Insecure Plugin Design | 🟡 Partial | @tool-decorated functions with dangerous sinks (eval/exec/shell); detects dangerous tool classes (ShellTool, PythonREPLTool, CodeInterpreterTool) |
-| LLM07 | System Prompt Leakage | 🟡 Partial | Hardcoded prompts in source code (regex + AST multi-line detection); does not detect prompts in API responses, log output, or error messages |
-| LLM08 | Excessive Agency | 🟢 Strong | 8 pattern categories: wildcard tool access, dangerous tool classes, disabled approval gates, dynamic dispatch (globals/getattr), shell interpreter sinks, broad tool descriptions, agent loop patterns, @tool sinks |
-| LLM10 | Unbounded Consumption | 🟡 Partial | Missing max_tokens on LLM API calls; does not check timeouts, rate limits, retry bounds, or streaming limits |
-| LLM03 | Supply Chain Vulnerabilities | 🔴 Out of scope | Requires dependency analysis and model provenance verification — not detectable by static analysis |
-| LLM04 | Data and Model Poisoning | 🔴 Out of scope | Requires runtime monitoring and training pipeline analysis |
-| LLM09 | Misinformation | 🔴 Out of scope | Requires factual verification at runtime — not detectable by static analysis |
+| LLM01: Prompt Injection | LLM01 | 🟢 Strong | Regex + AST taint analysis across 6 injection vectors (f-string, .format(), %-format, concatenation, LangChain templates, aliased vars); role-aware detection distinguishes system from user role |
+| LLM02: Sensitive Info Disclosure | LLM02 | 🟡 Partial | 4 LLM API key patterns (OpenAI, Anthropic, Google, HuggingFace) across all file types; does not cover PII, DB connection strings, AWS/Azure credentials, or JWT tokens |
+| LLM03: Supply Chain | — | 🔵 Planned | Requires dependency analysis and model provenance verification |
+| LLM04: Data and Model Poisoning | — | 🔵 Planned | Requires runtime monitoring and training pipeline analysis |
+| LLM05: Improper Output Handling | LLM05 | 🟡 Partial | eval/exec/shell/SQL/HTML sinks with variable-name heuristics; AST taint from LLM API calls; does not track taint through attribute chains like `response.choices[0].message.content` |
+| LLM06: Excessive Agency | LLM08* | 🟢 Strong | 8 pattern categories: wildcard tool access, dangerous tool classes, disabled approval gates, dynamic dispatch (globals/getattr), shell interpreter sinks, broad tool descriptions, agent loop patterns, @tool sinks |
+| LLM07: System Prompt Leakage | LLM07 | 🟡 Partial | Hardcoded prompts in source code (regex + AST multi-line detection); does not detect prompts in API responses, log output, or error messages |
+| LLM08: Vector and Embedding Weaknesses | — | 🔵 Planned | Requires runtime analysis of retrieval pipelines |
+| LLM09: Misinformation | — | 🔵 Planned | Requires factual verification at runtime — not detectable by static analysis |
+| LLM10: Unbounded Consumption | LLM10 | 🟡 Partial | Missing max_tokens on LLM API calls; does not check timeouts, rate limits, retry bounds, or streaming limits |
+
+> *LLM06 (2025 "Excessive Agency") is implemented as rule `LLM08` in the codebase — a legacy of the prior OWASP LLM numbering. The detection coverage is unchanged.
 
 **Coverage levels:**
 - 🟢 **Strong** — dual-layer detection (regex + AST taint analysis), multiple pattern categories, high confidence
 - 🟡 **Partial** — single-layer detection or limited pattern coverage; PRs welcome to expand
-- 🔴 **Out of scope** — not detectable by static analysis alone
+- 🔵 **Planned** — not yet implemented; contributions especially welcome
 
 ### What Each Rule Detects
 
@@ -495,7 +511,7 @@ The following directories are automatically skipped during scanning:
 - Config files: prompt values in `system_prompt:`, `system_message:`, `prompt:` keys
 - Only flags strings longer than 100 characters to avoid noise from short generic prompts
 
-**LLM08 — Excessive Agency**
+**LLM06 (2025) — Excessive Agency** *(rule ID: LLM08 in codebase)*
 - Regex and AST: detects overly broad agent permissions and unsafe dynamic dispatch patterns
 - `globals()[fn_name]()` / `eval(fn_name)` — dynamic dispatch from LLM tool call → CRITICAL
 - `tools=["*"]` — wildcard tool access violating least privilege → HIGH
@@ -714,6 +730,12 @@ llmarmor scan ./src; echo "Exit code: $?"
 
 ---
 
+## Comparison
+
+See how LLMArmor compares to other tools in the LLM / GenAI security space (garak, Promptfoo, Lakera Guard, Protect AI, Mindgard): [COMPARISON.md](COMPARISON.md)
+
+---
+
 ## Contributing
 
 Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for the full
@@ -736,6 +758,12 @@ pytest
 - 🌐 Website: [llmarmor.dev](https://llmarmor.dev)
 - 📦 PyPI: [pypi.org/project/llmarmor](https://pypi.org/project/llmarmor/)
 - 🐛 Issues: [github.com/llmarmor/llmarmor/issues](https://github.com/llmarmor/llmarmor/issues)
+
+---
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=llmarmor/llmarmor&type=Date)](https://star-history.com/#llmarmor/llmarmor&Date)
 
 ---
 
